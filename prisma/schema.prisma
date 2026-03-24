@@ -1,0 +1,123 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique @db.VarChar(32)
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  chipBalance  BigInt   @default(10000) @map("chip_balance")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  handPlayers HandPlayer[]
+  handActions HandAction[]
+  stats       PlayerStats?
+
+  @@map("users")
+}
+
+model Table {
+  id                 String   @id @default(uuid())
+  name               String   @db.VarChar(64)
+  variant            String   @db.VarChar(8)
+  bettingStructure   String   @map("betting_structure") @db.VarChar(16)
+  maxSeats           Int      @map("max_seats") @db.SmallInt
+  smallBlind         Int      @map("small_blind")
+  bigBlind           Int      @map("big_blind")
+  minBuyIn           Int      @map("min_buy_in")
+  maxBuyIn           Int      @map("max_buy_in")
+  actionTimeoutSecs  Int      @default(30) @map("action_timeout_secs") @db.SmallInt
+  status             String   @default("active") @db.VarChar(16)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  hands Hand[]
+
+  @@map("tables")
+}
+
+model Hand {
+  id              String    @id @default(uuid())
+  tableId         String    @map("table_id")
+  variant         String    @db.VarChar(8)
+  handNumber      Int       @map("hand_number")
+  dealerSeat      Int       @map("dealer_seat") @db.SmallInt
+  smallBlindSeat  Int       @map("small_blind_seat") @db.SmallInt
+  bigBlindSeat    Int       @map("big_blind_seat") @db.SmallInt
+  communityCards  Json      @map("community_cards")
+  finalPot        Int       @map("final_pot")
+  startedAt       DateTime  @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+
+  table       Table        @relation(fields: [tableId], references: [id])
+  players     HandPlayer[]
+  actions     HandAction[]
+
+  @@unique([tableId, handNumber])
+  @@index([tableId])
+  @@map("hands")
+}
+
+model HandPlayer {
+  id               String   @id @default(uuid())
+  handId           String   @map("hand_id")
+  userId           String   @map("user_id")
+  seatIndex        Int      @map("seat_index") @db.SmallInt
+  holeCards        Json     @map("hole_cards")
+  startingStack    Int      @map("starting_stack")
+  endingStack      Int      @map("ending_stack")
+  netChips         Int      @map("net_chips")
+  wentToShowdown   Boolean  @default(false) @map("went_to_showdown")
+  wonPot           Boolean  @default(false) @map("won_pot")
+  winningHand      Json?    @map("winning_hand")
+
+  hand Hand @relation(fields: [handId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([handId, seatIndex])
+  @@index([handId])
+  @@index([userId])
+  @@map("hand_players")
+}
+
+model HandAction {
+  id         String   @id @default(uuid())
+  handId     String   @map("hand_id")
+  sequence   Int
+  phase      String   @db.VarChar(16)
+  seatIndex  Int      @map("seat_index") @db.SmallInt
+  userId     String   @map("user_id")
+  action     String   @db.VarChar(16)
+  amount     Int?
+  potAfter   Int      @map("pot_after")
+  occurredAt DateTime @default(now()) @map("occurred_at")
+
+  hand Hand @relation(fields: [handId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([handId, sequence])
+  @@index([handId])
+  @@map("hand_actions")
+}
+
+model PlayerStats {
+  userId         String   @id @map("user_id")
+  handsPlayed    Int      @default(0) @map("hands_played")
+  handsWon       Int      @default(0) @map("hands_won")
+  totalNetChips  BigInt   @default(0) @map("total_net_chips")
+  vpipHands      Int      @default(0) @map("vpip_hands")
+  pfrHands       Int      @default(0) @map("pfr_hands")
+  showdownsSeen  Int      @default(0) @map("showdowns_seen")
+  showdownsWon   Int      @default(0) @map("showdowns_won")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("player_stats")
+}
