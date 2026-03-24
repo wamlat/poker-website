@@ -1,11 +1,6 @@
 import { SidePot } from '../../types';
 import { calculateSidePots } from '../betting/SidePotCalculator';
 
-interface ContributionRecord {
-  playerId: string;
-  total: number;
-}
-
 export class PotManager {
   private contributions: Map<string, number> = new Map();
   private mainPot = 0;
@@ -25,8 +20,8 @@ export class PotManager {
    * Otherwise returns a single pot with all active players eligible.
    */
   calculatePots(activePlayerIds: string[]): { mainPot: number; sidePots: SidePot[] } {
-    const contribArray: ContributionRecord[] = Array.from(this.contributions.entries()).map(
-      ([playerId, total]) => ({ playerId, total }),
+    const contribArray = Array.from(this.contributions.entries()).map(
+      ([playerId, total]) => ({ playerId, totalContribution: total }),
     );
 
     const allInPlayers = contribArray.filter((c) => !activePlayerIds.includes(c.playerId));
