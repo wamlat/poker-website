@@ -16,7 +16,7 @@ function solverHandToEvaluated(solverHand: ReturnType<typeof SolverHand.solve>):
   return {
     rank: solverHand.rank,
     name: solverHand.name,
-    cards: (solverHand.cardPool as { value: string; suit: string }[]).map((c) => ({
+    cards: solverHand.cardPool.map((c) => ({
       rank: c.value as Card['rank'],
       suit: c.suit as Card['suit'],
     })),
