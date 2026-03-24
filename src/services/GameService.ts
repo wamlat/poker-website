@@ -5,12 +5,21 @@ import { HandStateMachine } from '../domain/hand/HandStateMachine';
 
 type EmitFn = (event: string, payload: unknown, privateToPlayerId?: string) => void;
 
+interface PendingRITVote {
+  handId: string;
+  eligiblePlayerIds: string[];
+  votes: Map<string, boolean>;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 export class GameService {
   private machines = new Map<string, HandStateMachine>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private autoDealTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   /** tableId → playerId → hole cards from the most recently completed hand */
   private lastHandHoleCards = new Map<string, Record<string, Card[]>>();
+  /** tableId → pending run-it-twice vote state */
+  private pendingRITVotes = new Map<string, PendingRITVote>();
 
   startHand(tableId: string, emit: EmitFn): boolean {
     const state = tableStateRepo.getTableState(tableId);
@@ -92,30 +101,27 @@ export class GameService {
       this.syncStacks(tableState, snapshot);
       tableStateRepo.saveTableState(tableId, tableState);
     }
-
     tableStateRepo.saveHandSnapshot(snapshot.handId, snapshot);
 
-    if (snapshot.phase === 'complete') {
-      // Cache hole cards so players can reveal them post-hand
-      const holeCards: Record<string, Card[]> = {};
-      for (const seat of snapshot.seats) {
-        if (seat && seat.holeCards.length > 0) holeCards[seat.playerId] = seat.holeCards;
-      }
-      this.lastHandHoleCards.set(tableId, holeCards);
-
-      this.machines.delete(snapshot.handId);
-      tableStateRepo.deleteHandSnapshot(snapshot.handId);
-
-      if (tableState) {
-        tableState.status = 'waiting';
-        tableState.currentHandId = null;
-        tableStateRepo.saveTableState(tableId, tableState);
-
-        // Auto-deal next hand if enabled
-        if (tableState.settings.autoDeal) {
-          this.scheduleAutoDeal(tableId, tableState.settings.autoDealDelaySeconds * 1000, emit);
+    // Check if the action triggered an RIT vote pause
+    const ritEvent = events.find((e) => e.type === 'rit_vote_needed');
+    if (ritEvent) {
+      // Emit all non-RIT events (e.g. action_taken) first
+      for (const event of events) {
+        if (event.type !== 'rit_vote_needed') {
+          emit(event.type, event.payload, event.privateToPlayerId);
         }
       }
+      const { handId, eligiblePlayerIds } = ritEvent.payload as {
+        handId: string;
+        eligiblePlayerIds: string[];
+      };
+      this.startRITVote(tableId, handId, eligiblePlayerIds, emit);
+      return;
+    }
+
+    if (snapshot.phase === 'complete') {
+      this.onHandComplete(tableId, tableState, snapshot, emit);
     } else {
       const timeoutSeconds = tableState?.settings.actionTimeoutSeconds ?? 20;
       const deadlineMs = Date.now() + timeoutSeconds * 1000;
@@ -136,16 +142,20 @@ export class GameService {
     }
   }
 
-  private scheduleAutoDeal(tableId: string, delayMs: number, emit: EmitFn): void {
-    const existing = this.autoDealTimeouts.get(tableId);
-    if (existing) clearTimeout(existing);
+  /** Called by TableNamespace when a player submits their RIT vote */
+  recordRITVote(tableId: string, handId: string, playerId: string, yes: boolean, emit: EmitFn): void {
+    const pending = this.pendingRITVotes.get(tableId);
+    if (!pending || pending.handId !== handId) return;
+    if (!pending.eligiblePlayerIds.includes(playerId)) return;
 
-    const handle = setTimeout(() => {
-      this.autoDealTimeouts.delete(tableId);
-      this.startHand(tableId, emit);
-    }, delayMs);
+    pending.votes.set(playerId, yes);
 
-    this.autoDealTimeouts.set(tableId, handle);
+    if (pending.votes.size >= pending.eligiblePlayerIds.length) {
+      const runTwice = Array.from(pending.votes.values()).every((v) => v);
+      clearTimeout(pending.timeout);
+      this.pendingRITVotes.delete(tableId);
+      this.resolveRITVote(tableId, handId, runTwice, emit);
+    }
   }
 
   getLastHandHoleCards(tableId: string, playerId: string): Card[] | null {
@@ -158,6 +168,92 @@ export class GameService {
       clearTimeout(handle);
       this.autoDealTimeouts.delete(tableId);
     }
+  }
+
+  // ─── Private helpers ──────────────────────────────────────────────────────
+
+  private startRITVote(
+    tableId: string,
+    handId: string,
+    eligiblePlayerIds: string[],
+    emit: EmitFn,
+  ): void {
+    // Timeout: if players don't vote within 15s, default to run once
+    const timeout = setTimeout(() => {
+      if (this.pendingRITVotes.get(tableId)?.handId === handId) {
+        this.pendingRITVotes.delete(tableId);
+        this.resolveRITVote(tableId, handId, false, emit);
+      }
+    }, 15_000);
+
+    this.pendingRITVotes.set(tableId, { handId, eligiblePlayerIds, votes: new Map(), timeout });
+
+    emit('hand:rit_vote_request', { handId, eligiblePlayerIds });
+  }
+
+  private resolveRITVote(tableId: string, handId: string, runTwice: boolean, emit: EmitFn): void {
+    const machine = this.machines.get(handId);
+    if (!machine) return;
+
+    const events = machine.resolveRIT(runTwice);
+    const snapshot = machine.getSnapshot();
+
+    const tableState = tableStateRepo.getTableState(tableId);
+    if (tableState) {
+      this.syncStacks(tableState, snapshot);
+      tableStateRepo.saveTableState(tableId, tableState);
+    }
+    tableStateRepo.saveHandSnapshot(snapshot.handId, snapshot);
+
+    if (snapshot.phase === 'complete') {
+      this.onHandComplete(tableId, tableState, snapshot, emit);
+      for (const event of events) {
+        emit(event.type, event.payload, event.privateToPlayerId);
+      }
+    } else {
+      for (const event of events) {
+        emit(event.type, event.payload, event.privateToPlayerId);
+      }
+    }
+  }
+
+  private onHandComplete(
+    tableId: string,
+    tableState: TableState | null,
+    snapshot: HandSnapshot,
+    emit: EmitFn,
+  ): void {
+    // Cache hole cards for post-hand reveal
+    const holeCards: Record<string, Card[]> = {};
+    for (const seat of snapshot.seats) {
+      if (seat && seat.holeCards.length > 0) holeCards[seat.playerId] = seat.holeCards;
+    }
+    this.lastHandHoleCards.set(tableId, holeCards);
+
+    this.machines.delete(snapshot.handId);
+    tableStateRepo.deleteHandSnapshot(snapshot.handId);
+
+    if (tableState) {
+      tableState.status = 'waiting';
+      tableState.currentHandId = null;
+      tableStateRepo.saveTableState(tableId, tableState);
+
+      if (tableState.settings.autoDeal) {
+        this.scheduleAutoDeal(tableId, tableState.settings.autoDealDelaySeconds * 1000, emit);
+      }
+    }
+  }
+
+  private scheduleAutoDeal(tableId: string, delayMs: number, emit: EmitFn): void {
+    const existing = this.autoDealTimeouts.get(tableId);
+    if (existing) clearTimeout(existing);
+
+    const handle = setTimeout(() => {
+      this.autoDealTimeouts.delete(tableId);
+      this.startHand(tableId, emit);
+    }, delayMs);
+
+    this.autoDealTimeouts.set(tableId, handle);
   }
 
   private scheduleTimeout(tableId: string, handId: string, emit: EmitFn): void {

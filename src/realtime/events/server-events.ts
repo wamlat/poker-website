@@ -82,6 +82,11 @@ export interface ChipsAdjustedPayload {
   newStack: number;
 }
 
+export interface RITVoteRequestPayload {
+  handId: string;
+  eligiblePlayerIds: string[];
+}
+
 export interface ServerToClientEvents {
   'lobby:table_list': (tables: TableState[]) => void;
   'lobby:table_created': (table: TableState) => void;
@@ -101,5 +106,6 @@ export interface ServerToClientEvents {
   'hand:cards_revealed': (payload: CardsRevealedPayload) => void;
   'hand:rabbit': (payload: RabbitCardsPayload) => void;
   'hand:complete': (payload: HandCompletePayload) => void;
+  'hand:rit_vote_request': (payload: RITVoteRequestPayload) => void;
   'hand:error': (payload: { code: string; message: string }) => void;
 }

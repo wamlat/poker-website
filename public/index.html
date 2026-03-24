@@ -717,6 +717,7 @@
       <button class="btn btn-ghost" id="btn-deal" onclick="startHand()">Deal Hand</button>
       <button class="btn btn-ghost" onclick="openLedger()">Ledger</button>
       <button class="btn btn-ghost" onclick="openOptions()">⚙ Options</button>
+      <button class="btn btn-ghost" id="btn-sound" onclick="toggleSound()" title="Toggle sounds">♪ Off</button>
       <button class="btn btn-danger" onclick="leaveTable()">Leave</button>
     </div>
   </div>
@@ -877,6 +878,18 @@
   </div>
 </div>
 
+<!-- RIT VOTE MODAL -->
+<div id="rit-modal" class="modal-overlay hidden">
+  <div class="modal" style="max-width:360px;text-align:center">
+    <div class="modal-title">Run It Twice?</div>
+    <div class="modal-info">Both players must agree. Deciding in <span id="rit-countdown">15</span>s — defaults to run once.</div>
+    <div class="modal-actions" style="justify-content:center;gap:14px;margin-top:28px">
+      <button class="btn btn-ghost" onclick="voteRIT(false)">Run Once</button>
+      <button class="btn btn-primary" onclick="voteRIT(true)">Run Twice</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ════════════════════════════════════════════════════════════
 //  STATE
@@ -910,6 +923,7 @@ const S = {
   sbSeat: -1,
   bbSeat: -1,
   lastCompleteHandId: null,
+  showdownCards: {},    // seatIndex → Card[] — persists until next hand
 
   // Timer
   timerIv: null,
@@ -924,7 +938,51 @@ const S = {
   eventQueue: [],
   queueProcessing: false,
   lastEventWasCommunity: false,
+
+  // RIT
+  pendingRitHandId: null,
+  ritCountdownIv: null,
 };
+
+// ─── SOUNDS ─────────────────────────────────────────────────
+let soundEnabled = false;
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function toggleSound() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  soundEnabled = !soundEnabled;
+  $('btn-sound').textContent = soundEnabled ? '♪ On' : '♪ Off';
+}
+
+function soundCard() {
+  if (!soundEnabled || audioCtx.state !== 'running') return;
+  const dur = 0.055;
+  const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * dur), audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'bandpass'; filt.frequency.value = 3200; filt.Q.value = 0.7;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.6;
+  src.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination);
+  src.start();
+}
+
+function soundChip() {
+  if (!soundEnabled || audioCtx.state !== 'running') return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(900, t);
+  osc.frequency.exponentialRampToValueAtTime(600, t + 0.08);
+  gain.gain.setValueAtTime(0.28, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + 0.13);
+}
 
 // ════════════════════════════════════════════════════════════
 //  SEAT POSITIONS
@@ -1068,9 +1126,11 @@ function connectSocket() {
   });
 
   S.socket.on('table:player_left', d => {
-    if (S.seats && d.seatIndex >= 0 && S.seats[d.seatIndex]) {
-      log(`<strong>${S.seats[d.seatIndex].displayName}</strong> left the table`);
-      S.seats[d.seatIndex] = null;
+    let idx = d.seatIndex;
+    if (idx < 0 && S.seats) idx = S.seats.findIndex(s => s && s.playerId === d.playerId);
+    if (S.seats && idx >= 0 && S.seats[idx]) {
+      log(`<strong>${S.seats[idx].displayName}</strong> left the table`);
+      S.seats[idx] = null;
       renderSeats();
     }
   });
@@ -1087,6 +1147,9 @@ function connectSocket() {
       S.seats[d.seatIndex].stack = d.newStack;
       if (S.ledger[d.targetPlayerId]) S.ledger[d.targetPlayerId].currentStack = d.newStack;
       renderSeats();
+      // Live update stack in open options modal
+      const stackEl = $(`pr-stack-${d.seatIndex}`);
+      if (stackEl) stackEl.textContent = fmt(d.newStack);
     }
   });
 
@@ -1104,6 +1167,14 @@ function connectSocket() {
     S.sbSeat     = p.smallBlindSeatIndex;
     S.bbSeat     = p.bigBlindSeatIndex;
     S.lastEventWasCommunity = false;
+    S.showdownCards = {};
+    // Flush any queued events from previous hand
+    S.eventQueue = [];
+    S.queueProcessing = false;
+    // Clear RIT modal
+    $('rit-modal').classList.add('hidden');
+    if (S.ritCountdownIv) { clearInterval(S.ritCountdownIv); S.ritCountdownIv = null; }
+    S.pendingRitHandId = null;
     if (S.seats) S.seats.forEach(s => { if (s) s.status = 'active'; });
     renderCommunity();
     $('rabbit-cards').classList.add('hidden');
@@ -1111,6 +1182,7 @@ function connectSocket() {
     setPot(p.pot);
     renderSeats();
     $('my-cards').innerHTML = '';
+    $('action-btns').innerHTML = '';
     $('winner-banner').classList.add('hidden');
     $('phase-lbl').textContent = 'PREFLOP';
     log(`<span class="ls">Hand ${p.handId.slice(0,8)} — ${p.variant}</span>`);
@@ -1120,6 +1192,7 @@ function connectSocket() {
     if (p.seatIndex === S.mySeatIndex) {
       S.myCards = p.holeCards;
       $('my-cards').innerHTML = S.myCards.map(c => cardHTML(c.rank, c.suit, true)).join('');
+      soundCard();
     }
     renderSeats();
   });
@@ -1133,6 +1206,7 @@ function connectSocket() {
       renderCommunity(newCount);
       $('phase-lbl').textContent = p.phase.toUpperCase();
       renderSeats();
+      soundCard();
       log(`<span class="ls">${p.phase.toUpperCase()}</span>`);
     }, true);
   });
@@ -1180,6 +1254,7 @@ function connectSocket() {
       const aCls = p.action === 'fold' ? 'lf' : p.action === 'raise' || p.action === 'bet' ? 'lr' : '';
       const amt  = p.amount ? ` <span class="la">${fmt(p.amount)}</span>` : '';
       log(`<strong>${name}</strong> <span class="${aCls}">${p.action.toUpperCase()}</span>${amt}`);
+      if (p.action !== 'fold' && p.action !== 'check') soundChip();
       renderSeats();
       clearActions();
     }, false);
@@ -1190,11 +1265,14 @@ function connectSocket() {
       clearTimer(); clearSeatTimer();
       S.lastEventWasCommunity = false;
 
-      // Reveal opponent cards where mustShow is true
+      // Cache and reveal all mustShow cards
       p.players.forEach(pl => {
-        if (pl.seatIndex !== S.mySeatIndex && pl.mustShow && pl.holeCards.length) {
-          const el = document.querySelector(`[data-seat="${pl.seatIndex}"] .seat-hole`);
-          if (el) el.innerHTML = pl.holeCards.map(c => cardHTML(c.rank, c.suit)).join('');
+        if (pl.mustShow && pl.holeCards.length) {
+          S.showdownCards[pl.seatIndex] = pl.holeCards;
+          if (pl.seatIndex !== S.mySeatIndex) {
+            const el = document.querySelector(`[data-seat="${pl.seatIndex}"] .seat-hole`);
+            if (el) el.innerHTML = pl.holeCards.map(c => cardHTML(c.rank, c.suit)).join('');
+          }
         }
       });
 
@@ -1232,6 +1310,7 @@ function connectSocket() {
   });
 
   S.socket.on('hand:cards_revealed', p => {
+    if (p.holeCards.length) S.showdownCards[p.seatIndex] = p.holeCards;
     if (p.seatIndex !== S.mySeatIndex && p.holeCards.length) {
       const el = document.querySelector(`[data-seat="${p.seatIndex}"] .seat-hole`);
       if (el) el.innerHTML = p.holeCards.map(c => cardHTML(c.rank, c.suit)).join('');
@@ -1248,36 +1327,59 @@ function connectSocket() {
   });
 
   S.socket.on('hand:complete', p => {
-    S.lastCompleteHandId = S.handId;
-    S.handId = null;
-    S.validActions = [];
-    S.currentActorSeat = -1;
-    S.currentDeadlineMs = null;
-    $('phase-lbl').textContent = '';
-    clearTimer(); clearSeatTimer(); clearActions();
-
-    // Remove run-it-twice board
-    const rtb = $('run-two-board');
-    if (rtb) rtb.remove();
-
-    p.finalSeats.forEach(fs => {
-      if (fs && S.seats[fs.seatIndex]) {
-        S.seats[fs.seatIndex].stack = fs.stack;
-        // Update ledger
-        if (S.ledger[fs.playerId]) S.ledger[fs.playerId].currentStack = fs.stack;
-        else S.ledger[fs.playerId] = { displayName: S.seats[fs.seatIndex]?.displayName || '', totalBuyIn: 0, currentStack: fs.stack };
+    enqueue(() => {
+      S.lastCompleteHandId = S.handId;
+      // Cache own cards for post-hand display before clearing handId
+      if (S.mySeatIndex >= 0 && S.myCards.length) {
+        S.showdownCards[S.mySeatIndex] = S.myCards;
       }
-    });
-    renderSeats();
+      S.handId = null;
+      S.validActions = [];
+      S.currentActorSeat = -1;
+      S.currentDeadlineMs = null;
+      $('phase-lbl').textContent = '';
+      clearTimer(); clearSeatTimer(); clearActions(true);
 
-    if (S.winnerTmo) clearTimeout(S.winnerTmo);
-    S.winnerTmo = setTimeout(() => {
-      $('winner-banner').classList.add('hidden');
-      $('my-cards').innerHTML = '';
-    }, 4500);
+      // Remove run-it-twice board
+      const rtb = $('run-two-board');
+      if (rtb) rtb.remove();
+
+      p.finalSeats.forEach(fs => {
+        if (fs && S.seats[fs.seatIndex]) {
+          S.seats[fs.seatIndex].stack = fs.stack;
+          if (S.ledger[fs.playerId]) S.ledger[fs.playerId].currentStack = fs.stack;
+          else S.ledger[fs.playerId] = { displayName: S.seats[fs.seatIndex]?.displayName || '', totalBuyIn: 0, currentStack: fs.stack };
+        }
+      });
+      renderSeats();
+
+      if (S.winnerTmo) clearTimeout(S.winnerTmo);
+      S.winnerTmo = setTimeout(() => {
+        $('winner-banner').classList.add('hidden');
+      }, 4500);
+    }, false);
   });
 
   S.socket.on('hand:error', p => log(`<span class="lf">Error: ${p.message}</span>`));
+
+  S.socket.on('hand:rit_vote_request', p => {
+    if (!p.eligiblePlayerIds.includes(S.socket.id)) return;
+    S.pendingRitHandId = p.handId;
+    // Start 15s countdown
+    let remaining = 15;
+    $('rit-countdown').textContent = remaining;
+    if (S.ritCountdownIv) clearInterval(S.ritCountdownIv);
+    S.ritCountdownIv = setInterval(() => {
+      remaining--;
+      $('rit-countdown').textContent = remaining;
+      if (remaining <= 0) {
+        clearInterval(S.ritCountdownIv);
+        S.ritCountdownIv = null;
+        $('rit-modal').classList.add('hidden');
+      }
+    }, 1000);
+    $('rit-modal').classList.remove('hidden');
+  });
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1410,9 +1512,17 @@ function renderSeats() {
       if (isMe && S.myCards.length) {
         holeHTML = `<div class="seat-hole">${S.myCards.map(c => cardHTML(c.rank, c.suit)).join('')}</div>`;
       } else if (!isFolded) {
-        const nc = variantCards(S.tableConfig?.variant);
-        holeHTML = `<div class="seat-hole">${Array(nc).fill(cardHTML('', '', false, true)).join('')}</div>`;
+        const sdCards = S.showdownCards[i];
+        if (sdCards && sdCards.length) {
+          holeHTML = `<div class="seat-hole">${sdCards.map(c => cardHTML(c.rank, c.suit)).join('')}</div>`;
+        } else {
+          const nc = variantCards(S.tableConfig?.variant);
+          holeHTML = `<div class="seat-hole">${Array(nc).fill(cardHTML('', '', false, true)).join('')}</div>`;
+        }
       }
+    } else if (seat && !S.handId && S.showdownCards[i]?.length) {
+      // Persist revealed cards until next hand starts
+      holeHTML = `<div class="seat-hole">${S.showdownCards[i].map(c => cardHTML(c.rank, c.suit)).join('')}</div>`;
     }
 
     // Status badge
@@ -1504,8 +1614,15 @@ function onSlider() {
   $('bet-val').textContent = fmt(parseInt($('bet-slider').value));
 }
 
-function clearActions() {
-  $('action-btns').innerHTML = '';
+function clearActions(keepReveal = false) {
+  if (keepReveal) {
+    // Remove all buttons except the reveal button
+    Array.from($('action-btns').children).forEach(btn => {
+      if (!btn.classList.contains('reveal')) btn.remove();
+    });
+  } else {
+    $('action-btns').innerHTML = '';
+  }
   $('bet-wrap').classList.add('hidden');
 }
 
@@ -1672,6 +1789,14 @@ function changeVariant(variant) {
 function pushSetting(key, value) {
   if (!isHost()) return;
   S.socket.emit('table:update_settings', { patch: { [key]: value } });
+}
+
+function voteRIT(yes) {
+  if (!S.pendingRitHandId) return;
+  S.socket.emit('hand:rit_vote', { handId: S.pendingRitHandId, yes });
+  if (S.ritCountdownIv) { clearInterval(S.ritCountdownIv); S.ritCountdownIv = null; }
+  S.pendingRitHandId = null;
+  $('rit-modal').classList.add('hidden');
 }
 </script>
 </body>

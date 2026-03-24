@@ -18,6 +18,7 @@ const EVENT_MAP: Record<string, string> = {
   showdown:        'hand:showdown',
   rabbit_cards:    'hand:rabbit',
   hand_complete:   'hand:complete',
+  rit_vote_needed: 'hand:rit_vote_request',
 };
 
 export function registerTableHandlers(io: Server): void {
@@ -142,14 +143,22 @@ export function registerTableHandlers(io: Server): void {
       }
     });
 
+    socket.on('hand:rit_vote', (payload) => {
+      const tableId = socket.data.currentTableId as string | undefined;
+      if (!tableId) return;
+      gameService.recordRITVote(tableId, payload.handId, userId, payload.yes, emit);
+    });
+
     socket.on('table:leave', async () => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
 
       try {
+        const state = tableService.getTableState(tableId);
+        const seatIndex = state ? state.seats.findIndex((s) => s?.playerId === userId) : -1;
         await tableService.leaveTable(tableId, userId);
         socket.leave(`table:${tableId}`);
-        io.to(`table:${tableId}`).emit('table:player_left', { playerId: userId, seatIndex: -1 });
+        io.to(`table:${tableId}`).emit('table:player_left', { playerId: userId, seatIndex });
         socket.data.currentTableId = undefined;
       } catch (err) {
         console.error('[Table] leave error:', err);
@@ -159,11 +168,13 @@ export function registerTableHandlers(io: Server): void {
     socket.on('disconnect', async () => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (tableId) {
+        const state = tableService.getTableState(tableId);
+        const seatIndex = state ? state.seats.findIndex((s) => s?.playerId === userId) : -1;
         try {
           await tableService.leaveTable(tableId, userId);
         } catch { /* ignore */ }
         io.to(`table:${tableId}`).emit('table:player_left', {
-          seatIndex: -1,
+          seatIndex,
           playerId: userId,
         });
       }

@@ -52,35 +52,33 @@ export class ActionValidator {
     const actions: ValidAction[] = [];
     const callAmount = Math.min(snapshot.currentBet - seat.currentStreetBet, seat.stack);
     const bettingState = this.toBettingState(snapshot, seat);
+    const isPotLimit = this.bettingEngine.structureName === 'Pot Limit';
 
-    // Fold is always available (unless check is free)
+    // Fold is always available
     actions.push({ type: 'fold' });
 
     if (snapshot.currentBet === seat.currentStreetBet) {
       // No bet to call — can check
       actions.push({ type: 'check' });
     } else {
-      // Must call or fold
-      if (callAmount < seat.stack) {
+      // There is a bet to call.
+      // For pot-limit: always show 'call' (even if going all-in — no separate all-in button).
+      // For no-limit: show 'call' only when it doesn't consume the whole stack.
+      if (isPotLimit || callAmount < seat.stack) {
         actions.push({ type: 'call', amount: callAmount });
       }
     }
 
-    // All-in is always available if stack > 0
-    if (seat.stack > 0) {
-      const isAlreadyAllIn = callAmount >= seat.stack;
-      if (!isAlreadyAllIn) {
-        actions.push({ type: 'all-in', amount: seat.stack });
-      } else {
-        // Calling would be an all-in
-        actions.push({ type: 'all-in', amount: seat.stack });
-      }
+    // Explicit all-in shove: only for no-limit games.
+    // In pot-limit the max raise already caps at stack, so no separate button is needed.
+    if (!isPotLimit && seat.stack > 0) {
+      actions.push({ type: 'all-in', amount: seat.stack });
     }
 
     // Bet (no current bet) or Raise (responding to a bet)
     const hasBet = snapshot.currentBet > 0;
     const bounds = this.bettingEngine.getRaiseBounds(bettingState);
-    if (bounds.min < bounds.max || bounds.min === seat.stack) {
+    if (bounds.min > 0 && bounds.min <= bounds.max) {
       if (hasBet) {
         actions.push({ type: 'raise', minAmount: bounds.min, maxAmount: bounds.max });
       } else {

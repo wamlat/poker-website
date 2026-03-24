@@ -45,4 +45,5 @@ export interface ClientToServerEvents {
   'table:update_settings': (payload: UpdateSettingsPayload) => void;
   'hand:action': (payload: HandActionPayload) => void;
   'hand:reveal_cards': (payload: { handId: string }) => void;
+  'hand:rit_vote': (payload: { handId: string; yes: boolean }) => void;
 }

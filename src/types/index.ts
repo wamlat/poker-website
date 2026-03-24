@@ -133,7 +133,8 @@ export type HandEventType =
   | 'pot_updated'
   | 'showdown'
   | 'rabbit_cards'         // rabbit hunting — future cards revealed after fold win
-  | 'hand_complete';
+  | 'hand_complete'
+  | 'rit_vote_needed';     // pause before all-in runout to collect run-it-twice votes
 
 export interface HandEvent {
   type: HandEventType;

@@ -32,6 +32,8 @@ export class HandStateMachine {
   private validator: ActionValidator;
   private variant: GameVariant;
   private settings: TableSettings;
+  /** True when waiting for RIT votes before advancing the all-in runout */
+  private ritPending = false;
 
   constructor(
     variant: GameVariant,
@@ -200,12 +202,49 @@ export class HandStateMachine {
 
     // Check if street is complete
     if (this.isStreetComplete()) {
-      events.push(...this.advanceStreet());
+      // Check for run-it-twice vote before starting the all-in runout
+      const activePlayers = this.getActiveSeatStates().filter((s) => s.status === 'active');
+      const contenders = this.getActiveSeatStates().filter(
+        (s) => s.status === 'active' || s.status === 'all-in',
+      );
+      if (
+        activePlayers.length === 0 &&
+        this.settings.runItTwice &&
+        this.hasCardsRemaining() &&
+        contenders.length >= 2
+      ) {
+        // Pause the hand and ask players to vote
+        this.ritPending = true;
+        this.snapshot.currentActorSeatIndex = null;
+        events.push({
+          type: 'rit_vote_needed',
+          payload: {
+            handId: this.snapshot.handId,
+            eligiblePlayerIds: contenders.map((s) => s.playerId),
+          },
+        });
+      } else {
+        events.push(...this.advanceStreet());
+      }
     } else {
       this.snapshot.currentActorSeatIndex = this.nextActiveAfter(seat.seatIndex);
       events.push(...this.emitActionRequired());
     }
 
+    return events;
+  }
+
+  /**
+   * Called by GameService once all eligible players have cast their RIT vote.
+   * `runItTwice` reflects the unanimous decision (true only if all said yes).
+   */
+  resolveRIT(runItTwice: boolean): HandEvent[] {
+    if (!this.ritPending) return [];
+    this.ritPending = false;
+    const saved = this.settings.runItTwice;
+    this.settings.runItTwice = runItTwice;
+    const events = this.advanceStreet();
+    this.settings.runItTwice = saved;
     return events;
   }
 
