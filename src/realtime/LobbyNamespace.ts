@@ -8,7 +8,6 @@ export function registerLobbyHandlers(io: Server): void {
   io.on('connection', (socket: AuthenticatedSocket) => {
     socket.join('lobby');
 
-    // Send table list on connect
     socket.emit('lobby:table_list', tableService.listTables());
 
     socket.on('lobby:list_tables', () => {
@@ -17,7 +16,7 @@ export function registerLobbyHandlers(io: Server): void {
 
     socket.on('lobby:create_table', (payload) => {
       try {
-        const state = tableService.createTable(payload);
+        const state = tableService.createTable(payload, socket.data.userId);
         socket.emit('lobby:table_created', state);
         io.to('lobby').emit('lobby:table_updated', state);
       } catch (err: unknown) {

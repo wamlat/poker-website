@@ -8,6 +8,7 @@ import {
   SeatState,
   SidePot,
   TableConfig,
+  TableSettings,
   ValidAction,
 } from '../../types';
 import { BettingEngineFactory } from '../betting/BettingEngineFactory';
@@ -30,6 +31,7 @@ export class HandStateMachine {
   private potManager: PotManager;
   private validator: ActionValidator;
   private variant: GameVariant;
+  private settings: TableSettings;
 
   constructor(
     variant: GameVariant,
@@ -37,10 +39,12 @@ export class HandStateMachine {
     seats: InitialSeat[],
     dealerButtonSeatIndex: number,
     handNumber: number,
+    settings: TableSettings,
   ) {
     this.variant = variant;
     this.deck = new Deck();
     this.potManager = new PotManager();
+    this.settings = settings;
 
     const bettingEngine = BettingEngineFactory.create(variant.bettingStructure);
     this.validator = new ActionValidator(bettingEngine);
@@ -78,7 +82,6 @@ export class HandStateMachine {
     // First to act preflop: seat after BB
     this.snapshot.currentActorSeatIndex = this.nextActiveAfter(this.snapshot.bigBlindSeatIndex);
 
-    // Emit hand_started first so clients initialise state before receiving hole cards
     events.push({
       type: 'hand_started',
       payload: {
@@ -91,7 +94,7 @@ export class HandStateMachine {
       },
     });
 
-    // Deal hole cards (after hand_started so the frontend doesn't clear them)
+    // Deal hole cards
     for (const seat of this.getActiveSeatStates()) {
       seat.holeCards = this.deck.deal(this.variant.holeCardCount);
       events.push({
@@ -128,7 +131,6 @@ export class HandStateMachine {
         break;
 
       case 'check':
-        // No state change needed
         break;
 
       case 'call': {
@@ -149,6 +151,7 @@ export class HandStateMachine {
         this.snapshot.currentBet = amount;
         this.addToPot(seat, amount - seat.currentStreetBet);
         if (seat.stack === 0) seat.status = 'all-in';
+        this.snapshot.lastAggressorSeatIndex = seat.seatIndex;
         // Reset everyone else's acted flag so they must respond to the raise
         for (const s of this.getActiveSeatStates()) {
           if (s.seatIndex !== seat.seatIndex) s.hasActedThisStreet = false;
@@ -164,7 +167,7 @@ export class HandStateMachine {
             this.snapshot.lastRaiseSize = raiseSize;
           }
           this.snapshot.currentBet = seat.currentStreetBet + allInAmount;
-          // Reset everyone else's acted flag so they must respond to the all-in raise
+          this.snapshot.lastAggressorSeatIndex = seat.seatIndex;
           for (const s of this.getActiveSeatStates()) {
             if (s.seatIndex !== seat.seatIndex) s.hasActedThisStreet = false;
           }
@@ -225,11 +228,8 @@ export class HandStateMachine {
       (s) => s.status === 'active',
     );
 
-    // If all remaining active players are all-in, street is done
     if (seats.length === 0) return true;
 
-    // Every active player must have voluntarily acted AND matched the current bet.
-    // This ensures the BB gets their option even when no one raises preflop.
     return seats.every(
       (s) => s.hasActedThisStreet && s.currentStreetBet === this.snapshot.currentBet,
     );
@@ -262,16 +262,134 @@ export class HandStateMachine {
       payload: { phase: nextPhase, cards: newCards },
     });
 
-    // Check if all remaining players are all-in — skip betting, just deal remaining streets
     const activePlayers = this.getActiveSeatStates().filter((s) => s.status === 'active');
     if (activePlayers.length === 0) {
-      events.push(...this.advanceStreet());
+      // All-in runout — check for run-it-twice
+      if (this.settings.runItTwice && this.hasMultipleStreetsRemaining()) {
+        events.push(...this.runItTwice());
+      } else {
+        events.push(...this.advanceStreet());
+      }
     } else {
       this.snapshot.currentActorSeatIndex = this.firstActiveAfterDealer();
       events.push(...this.emitActionRequired());
     }
 
     return events;
+  }
+
+  /** True when we are before the river and all players are all-in */
+  private hasMultipleStreetsRemaining(): boolean {
+    const phase = this.snapshot.phase;
+    return phase === HandPhase.PREFLOP || phase === HandPhase.FLOP;
+  }
+
+  /**
+   * Run-it-twice: deal remaining board cards a second time and split the pot.
+   * Called only when all players are all-in and ≥2 streets remain.
+   * Emits community_dealt for remaining streets of board 2, then two showdown events.
+   */
+  private runItTwice(): HandEvent[] {
+    const events: HandEvent[] = [];
+
+    // Finish dealing board 1 (remaining streets after current)
+    const board1Extra = this.dealRemainingBoard();
+    for (const { phase, cards } of board1Extra) {
+      this.snapshot.communityCards.push(...cards);
+      events.push({ type: 'community_dealt', payload: { phase, cards } });
+    }
+
+    // Board 1 community cards (full board)
+    const board1 = [...this.snapshot.communityCards];
+
+    // Deal board 2 from remaining deck
+    const board2 = this.buildSecondBoard();
+
+    events.push({
+      type: 'run_two_board',
+      payload: { board: board2 },
+    });
+
+    // Evaluate both boards and split pot
+    const contenders = this.getActiveSeatStates().filter(
+      (s) => s.status === 'active' || s.status === 'all-in',
+    );
+
+    const halfPot = Math.floor(this.snapshot.pot / 2);
+    const remainder = this.snapshot.pot % 2;
+
+    const board1Winners = this.evaluateBoard(board1, contenders);
+    const board2Winners = this.evaluateBoard(board2, contenders);
+
+    // Award half pot to board 1 winners
+    const b1Each = Math.floor(halfPot / board1Winners.length);
+    for (const w of board1Winners) w.stack += b1Each;
+
+    // Award half pot (+ remainder chip) to board 2 winners
+    const b2Share = halfPot + remainder;
+    const b2Each = Math.floor(b2Share / board2Winners.length);
+    for (const w of board2Winners) w.stack += b2Each;
+
+    events.push({
+      type: 'showdown',
+      payload: {
+        runItTwice: true,
+        board1,
+        board2,
+        players: contenders.map((s) => ({
+          seatIndex: s.seatIndex,
+          playerId: s.playerId,
+          holeCards: this.settings.showdownReveal !== 'never' ? s.holeCards : [],
+        })),
+        board1Winners: board1Winners.map((w) => ({ seatIndex: w.seatIndex, playerId: w.playerId, amount: b1Each })),
+        board2Winners: board2Winners.map((w) => ({ seatIndex: w.seatIndex, playerId: w.playerId, amount: b2Each + (board2Winners.length === 1 ? remainder : 0) })),
+        sidePots: [],
+      },
+    });
+
+    events.push(...this.completeHand());
+    return events;
+  }
+
+  /** Deal all remaining streets (after current phase) and return them as {phase, cards}[] */
+  private dealRemainingBoard(): { phase: HandPhase; cards: Card[] }[] {
+    const result: { phase: HandPhase; cards: Card[] }[] = [];
+    let phase = this.nextPhase();
+    while (phase !== HandPhase.SHOWDOWN && phase !== HandPhase.COMPLETE) {
+      const cards = this.dealCommunityCards(phase);
+      result.push({ phase, cards });
+      this.snapshot.phase = phase;
+      phase = this.nextPhase();
+    }
+    return result;
+  }
+
+  /** Build a second board of the same total length as board1 but with fresh cards */
+  private buildSecondBoard(): Card[] {
+    // Re-use the first 3 cards (flop) if we're past the flop, else deal fresh full board
+    const communityLen = this.snapshot.communityCards.length; // after board1 dealt
+    const remaining = 5 - communityLen + this.countPhaseCards();
+    // Actually: second board is always 5 cards from remaining deck
+    return this.deck.deal(5);
+  }
+
+  /** Cards already on board before current street was dealt */
+  private countPhaseCards(): number {
+    switch (this.snapshot.phase) {
+      case HandPhase.FLOP: return 3;
+      case HandPhase.TURN: return 4;
+      default: return 0;
+    }
+  }
+
+  private evaluateBoard(board: Card[], contenders: SeatState[]): SeatState[] {
+    const evaluated = contenders.map((seat) => ({
+      seat,
+      hand: this.variant.selectBestHand(seat.holeCards, board),
+    }));
+    const ranks = evaluated.map((e) => e.hand);
+    const winnerIndices = HandEvaluator.findWinners(ranks);
+    return winnerIndices.map((i) => evaluated[i].seat);
   }
 
   private nextPhase(): HandPhase {
@@ -322,30 +440,46 @@ export class HandStateMachine {
       contenders.filter((s) => s.status === 'active').map((s) => s.playerId),
     );
 
-    // Distribute pot(s) to winners
     const potPerWinner = Math.floor(this.snapshot.pot / winners.length);
     for (const winner of winners) {
       winner.seat.stack += potPerWinner;
     }
-    // Remainder chip goes to first winner (closest to left of dealer)
     const remainder = this.snapshot.pot % winners.length;
     if (remainder > 0) {
       winners[0].seat.stack += remainder;
     }
 
+    // Apply showdown reveal rule
+    const revealRule = this.settings.showdownReveal;
+    const lastAggressor = this.snapshot.lastAggressorSeatIndex;
+
+    const playersPayload = evaluated.map((e) => {
+      let reveal = false;
+      if (revealRule === 'always') {
+        reveal = true;
+      } else if (revealRule === 'standard') {
+        const isWinner = winners.some((w) => w.seat.seatIndex === e.seat.seatIndex);
+        const isAggressor = lastAggressor === e.seat.seatIndex;
+        reveal = isWinner || isAggressor;
+      }
+      // 'never' reveals nothing
+      return {
+        seatIndex: e.seat.seatIndex,
+        playerId: e.seat.playerId,
+        holeCards: reveal ? e.seat.holeCards : [],
+        bestHand: reveal ? e.hand : { rank: 0, name: '' },
+        mustShow: reveal,
+      };
+    });
+
     events.push({
       type: 'showdown',
       payload: {
-        players: evaluated.map((e) => ({
-          seatIndex: e.seat.seatIndex,
-          playerId: e.seat.playerId,
-          holeCards: e.seat.holeCards,
-          bestHand: e.hand,
-        })),
+        players: playersPayload,
         winners: winners.map((w) => ({
           seatIndex: w.seat.seatIndex,
           playerId: w.seat.playerId,
-          amount: potPerWinner,
+          amount: potPerWinner + (winners[0].seat.seatIndex === w.seat.seatIndex ? remainder : 0),
           handName: w.hand.name,
         })),
         sidePots: sidePots.sidePots,
@@ -377,8 +511,26 @@ export class HandStateMachine {
       },
     ];
 
+    // Rabbit hunting — reveal what would have come next
+    if (this.settings.rabbitHunting) {
+      const rabbitCards = this.getRabbitCards();
+      if (rabbitCards.length > 0) {
+        events.push({
+          type: 'rabbit_cards',
+          payload: { cards: rabbitCards },
+        });
+      }
+    }
+
     events.push(...this.completeHand());
     return events;
+  }
+
+  /** Returns the cards that would have come out next (up to remaining community cards needed) */
+  private getRabbitCards(): Card[] {
+    const needed = 5 - this.snapshot.communityCards.length;
+    if (needed <= 0) return [];
+    return this.deck.deal(Math.min(needed, this.deck.remaining()));
   }
 
   private completeHand(): HandEvent[] {
@@ -459,7 +611,6 @@ export class HandStateMachine {
       };
     }
 
-    // Determine blind positions (heads-up rules differ from full table)
     const activeSeatIndices = seats.map((s) => s.seatIndex).sort((a, b) => a - b);
     const dealerPos = activeSeatIndices.indexOf(dealerButtonSeatIndex);
     const isHeadsUp = activeSeatIndices.length === 2;
@@ -468,7 +619,6 @@ export class HandStateMachine {
     let bbIdx: number;
 
     if (isHeadsUp) {
-      // Heads-up: dealer posts SB, other player posts BB
       sbIdx = dealerButtonSeatIndex;
       bbIdx = activeSeatIndices[(dealerPos + 1) % activeSeatIndices.length];
     } else {
@@ -491,6 +641,7 @@ export class HandStateMachine {
       bigBlindSeatIndex: bbIdx,
       currentBet: 0,
       lastRaiseSize: config.bigBlind,
+      lastAggressorSeatIndex: bbIdx, // BB is the initial "aggressor" preflop
       actionDeadlineMs: null,
       bigBlind: config.bigBlind,
       smallBlind: config.smallBlind,

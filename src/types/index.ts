@@ -41,6 +41,19 @@ export interface SidePot {
   eligiblePlayerIds: string[];
 }
 
+// ─── Table Settings ───────────────────────────────────────────────────────────
+
+export type ShowdownRevealRule = 'standard' | 'always' | 'never';
+
+export interface TableSettings {
+  autoDeal: boolean;
+  autoDealDelaySeconds: 2 | 4 | 6;
+  runItTwice: boolean;
+  rabbitHunting: boolean;
+  showdownReveal: ShowdownRevealRule;
+  actionTimeoutSeconds: number;
+}
+
 // ─── Hand State Machine ───────────────────────────────────────────────────────
 
 export enum HandPhase {
@@ -83,6 +96,7 @@ export interface HandSnapshot {
   bigBlindSeatIndex: number;
   currentBet: number;
   lastRaiseSize: number;
+  lastAggressorSeatIndex: number | null;
   actionDeadlineMs: number | null;
   bigBlind: number;
   smallBlind: number;
@@ -113,10 +127,12 @@ export type HandEventType =
   | 'hand_started'
   | 'cards_dealt'          // private — per-player hole cards
   | 'community_dealt'
+  | 'run_two_board'        // second board in run-it-twice
   | 'action_required'
   | 'action_taken'
   | 'pot_updated'
   | 'showdown'
+  | 'rabbit_cards'         // rabbit hunting — future cards revealed after fold win
   | 'hand_complete';
 
 export interface HandEvent {
@@ -147,19 +163,32 @@ export interface Seat {
   status: 'active' | 'sitting-out' | 'waiting-for-bb';
 }
 
+export const DEFAULT_TABLE_SETTINGS: TableSettings = {
+  autoDeal: false,
+  autoDealDelaySeconds: 4,
+  runItTwice: false,
+  rabbitHunting: false,
+  showdownReveal: 'standard',
+  actionTimeoutSeconds: 20,
+};
+
 export interface TableState {
   config: TableConfig;
   seats: (Seat | null)[];
   status: 'waiting' | 'running' | 'paused';
   currentHandId: string | null;
   handNumber: number;
+  hostPlayerId: string;
+  settings: TableSettings;
 }
 
-// ─── Auth ─────────────────────────────────────────────────────────────────────
+// ─── Ledger ───────────────────────────────────────────────────────────────────
 
-export interface JwtPayload {
-  userId: string;
-  username: string;
+export interface LedgerEntry {
+  playerId: string;
+  displayName: string;
+  totalBuyIn: number;
+  currentStack: number;
 }
 
 // ─── Validation ──────────────────────────────────────────────────────────────

@@ -1,4 +1,3 @@
-import { config } from '../config';
 import { tableStateRepo } from '../repositories/TableStateRepository';
 import { HandSnapshot, PlayerAction, SeatState, TableState } from '../types';
 import { getVariant } from '../domain/variants';
@@ -9,6 +8,7 @@ type EmitFn = (event: string, payload: unknown, privateToPlayerId?: string) => v
 export class GameService {
   private machines = new Map<string, HandStateMachine>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  private autoDealTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   startHand(tableId: string, emit: EmitFn): boolean {
     const state = tableStateRepo.getTableState(tableId);
@@ -36,6 +36,7 @@ export class GameService {
       })),
       dealerSeatIndex,
       state.handNumber,
+      state.settings,
     );
 
     const events = machine.start();
@@ -47,8 +48,7 @@ export class GameService {
     tableStateRepo.saveHandSnapshot(snapshot.handId, snapshot);
     this.machines.set(snapshot.handId, machine);
 
-    // Set action timer
-    const deadlineMs = Date.now() + state.config.actionTimeoutSeconds * 1000;
+    const deadlineMs = Date.now() + state.settings.actionTimeoutSeconds * 1000;
     tableStateRepo.setActionTimer(snapshot.handId, deadlineMs);
     this.scheduleTimeout(tableId, snapshot.handId, emit);
 
@@ -66,7 +66,6 @@ export class GameService {
       return;
     }
 
-    // Resolve seatIndex from the snapshot (client sends -1)
     if (action.seatIndex === -1) {
       const snap = machine.getSnapshot();
       const idx = snap.seats.findIndex((s) => s && s.playerId === action.playerId);
@@ -77,7 +76,6 @@ export class GameService {
       action.seatIndex = idx;
     }
 
-    // Clear timer since player acted
     this.clearTimeout(action.handId);
 
     const events = machine.act(action);
@@ -99,11 +97,15 @@ export class GameService {
         tableState.status = 'waiting';
         tableState.currentHandId = null;
         tableStateRepo.saveTableState(tableId, tableState);
+
+        // Auto-deal next hand if enabled
+        if (tableState.settings.autoDeal) {
+          this.scheduleAutoDeal(tableId, tableState.settings.autoDealDelaySeconds * 1000, emit);
+        }
       }
     } else {
-      // Reset timer for next actor
-      const timeout = tableState?.config.actionTimeoutSeconds ?? config.actionTimeoutSeconds;
-      const deadlineMs = Date.now() + timeout * 1000;
+      const timeoutSeconds = tableState?.settings.actionTimeoutSeconds ?? 20;
+      const deadlineMs = Date.now() + timeoutSeconds * 1000;
       tableStateRepo.setActionTimer(snapshot.handId, deadlineMs);
       this.scheduleTimeout(tableId, snapshot.handId, emit);
     }
@@ -113,15 +115,35 @@ export class GameService {
     }
   }
 
+  private scheduleAutoDeal(tableId: string, delayMs: number, emit: EmitFn): void {
+    const existing = this.autoDealTimeouts.get(tableId);
+    if (existing) clearTimeout(existing);
+
+    const handle = setTimeout(() => {
+      this.autoDealTimeouts.delete(tableId);
+      this.startHand(tableId, emit);
+    }, delayMs);
+
+    this.autoDealTimeouts.set(tableId, handle);
+  }
+
+  cancelAutoDeal(tableId: string): void {
+    const handle = this.autoDealTimeouts.get(tableId);
+    if (handle) {
+      clearTimeout(handle);
+      this.autoDealTimeouts.delete(tableId);
+    }
+  }
+
   private scheduleTimeout(tableId: string, handId: string, emit: EmitFn): void {
     this.clearTimeout(handId);
 
     const state = tableStateRepo.getTableState(tableId);
-    const timeoutMs = (state?.config.actionTimeoutSeconds ?? config.actionTimeoutSeconds) * 1000;
+    const timeoutMs = (state?.settings.actionTimeoutSeconds ?? 20) * 1000;
 
     const handle = setTimeout(() => {
       const deadline = tableStateRepo.getActionTimer(handId);
-      if (deadline === null) return; // already acted
+      if (deadline === null) return;
 
       const snapshot = tableStateRepo.getHandSnapshot(handId);
       if (!snapshot || snapshot.currentActorSeatIndex === null) return;
@@ -160,7 +182,6 @@ export class GameService {
   }
 
   private nextDealerButton(state: TableState): number {
-    // Find next occupied seat after current dealer (or start from 0)
     const occupied = state.seats
       .map((s, i) => (s && s.stack >= state.config.bigBlind ? i : -1))
       .filter((i) => i !== -1);
