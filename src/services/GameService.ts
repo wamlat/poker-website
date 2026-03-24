@@ -66,6 +66,17 @@ export class GameService {
       return;
     }
 
+    // Resolve seatIndex from the snapshot (client sends -1)
+    if (action.seatIndex === -1) {
+      const snap = machine.getSnapshot();
+      const idx = snap.seats.findIndex((s) => s && s.playerId === action.playerId);
+      if (idx === -1) {
+        emit('hand:error', { code: 'NOT_IN_HAND', message: 'Player not in hand' }, action.playerId);
+        return;
+      }
+      action.seatIndex = idx;
+    }
+
     // Clear timer since player acted
     this.clearTimeout(action.handId);
 

@@ -75,19 +75,10 @@ export class HandStateMachine {
     this.snapshot.lastRaiseSize = bbAmount;
     this.snapshot.phase = HandPhase.PREFLOP;
 
-    // Deal hole cards
-    for (const seat of this.getActiveSeatStates()) {
-      seat.holeCards = this.deck.deal(this.variant.holeCardCount);
-      events.push({
-        type: 'cards_dealt',
-        payload: { seatIndex: seat.seatIndex, holeCards: seat.holeCards },
-        privateToPlayerId: seat.playerId,
-      });
-    }
-
     // First to act preflop: seat after BB
     this.snapshot.currentActorSeatIndex = this.nextActiveAfter(this.snapshot.bigBlindSeatIndex);
 
+    // Emit hand_started first so clients initialise state before receiving hole cards
     events.push({
       type: 'hand_started',
       payload: {
@@ -99,6 +90,16 @@ export class HandStateMachine {
         pot: this.snapshot.pot,
       },
     });
+
+    // Deal hole cards (after hand_started so the frontend doesn't clear them)
+    for (const seat of this.getActiveSeatStates()) {
+      seat.holeCards = this.deck.deal(this.variant.holeCardCount);
+      events.push({
+        type: 'cards_dealt',
+        payload: { seatIndex: seat.seatIndex, holeCards: seat.holeCards },
+        privateToPlayerId: seat.playerId,
+      });
+    }
 
     events.push(...this.emitActionRequired());
 
