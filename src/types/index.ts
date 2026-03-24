@@ -65,6 +65,7 @@ export interface SeatState {
   currentStreetBet: number;
   totalHandContribution: number;
   status: PlayerStatus;
+  hasActedThisStreet: boolean;
 }
 
 export interface HandSnapshot {

@@ -149,6 +149,10 @@ export class HandStateMachine {
         this.snapshot.currentBet = amount;
         this.addToPot(seat, amount - seat.currentStreetBet);
         if (seat.stack === 0) seat.status = 'all-in';
+        // Reset everyone else's acted flag so they must respond to the raise
+        for (const s of this.getActiveSeatStates()) {
+          if (s.seatIndex !== seat.seatIndex) s.hasActedThisStreet = false;
+        }
         break;
       }
 
@@ -160,12 +164,19 @@ export class HandStateMachine {
             this.snapshot.lastRaiseSize = raiseSize;
           }
           this.snapshot.currentBet = seat.currentStreetBet + allInAmount;
+          // Reset everyone else's acted flag so they must respond to the all-in raise
+          for (const s of this.getActiveSeatStates()) {
+            if (s.seatIndex !== seat.seatIndex) s.hasActedThisStreet = false;
+          }
         }
         this.addToPot(seat, allInAmount);
         seat.status = 'all-in';
         break;
       }
     }
+
+    // Mark this player as having voluntarily acted
+    seat.hasActedThisStreet = true;
 
     events.push({
       type: 'action_taken',
@@ -217,16 +228,20 @@ export class HandStateMachine {
     // If all remaining active players are all-in, street is done
     if (seats.length === 0) return true;
 
-    // All active players have matched the current bet (or acted)
-    return seats.every((s) => s.currentStreetBet === this.snapshot.currentBet);
+    // Every active player must have voluntarily acted AND matched the current bet.
+    // This ensures the BB gets their option even when no one raises preflop.
+    return seats.every(
+      (s) => s.hasActedThisStreet && s.currentStreetBet === this.snapshot.currentBet,
+    );
   }
 
   private advanceStreet(): HandEvent[] {
     const events: HandEvent[] = [];
 
-    // Reset street bets
+    // Reset street bets and acted flags for the new street
     for (const seat of this.getActiveSeatStates()) {
       seat.currentStreetBet = 0;
+      seat.hasActedThisStreet = false;
     }
     this.snapshot.currentBet = 0;
     this.snapshot.lastRaiseSize = this.snapshot.bigBlind;
@@ -440,6 +455,7 @@ export class HandStateMachine {
         currentStreetBet: 0,
         totalHandContribution: 0,
         status: 'active',
+        hasActedThisStreet: false,
       };
     }
 
