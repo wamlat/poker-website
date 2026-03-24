@@ -1,5 +1,5 @@
 import { tableStateRepo } from '../repositories/TableStateRepository';
-import { HandSnapshot, PlayerAction, SeatState, TableState } from '../types';
+import { Card, HandSnapshot, PlayerAction, SeatState, TableState } from '../types';
 import { getVariant } from '../domain/variants';
 import { HandStateMachine } from '../domain/hand/HandStateMachine';
 
@@ -9,6 +9,8 @@ export class GameService {
   private machines = new Map<string, HandStateMachine>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private autoDealTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  /** tableId → playerId → hole cards from the most recently completed hand */
+  private lastHandHoleCards = new Map<string, Record<string, Card[]>>();
 
   startHand(tableId: string, emit: EmitFn): boolean {
     const state = tableStateRepo.getTableState(tableId);
@@ -21,6 +23,7 @@ export class GameService {
     if (readySeats.length < 2) return false;
 
     const dealerSeatIndex = this.nextDealerButton(state);
+    state.dealerSeatIndex = dealerSeatIndex;
     state.handNumber += 1;
     state.status = 'running';
 
@@ -53,6 +56,9 @@ export class GameService {
     this.scheduleTimeout(tableId, snapshot.handId, emit);
 
     for (const event of events) {
+      if (event.type === 'action_required') {
+        (event.payload as Record<string, unknown>).deadlineMs = deadlineMs;
+      }
       emit(event.type, event.payload, event.privateToPlayerId);
     }
 
@@ -90,6 +96,13 @@ export class GameService {
     tableStateRepo.saveHandSnapshot(snapshot.handId, snapshot);
 
     if (snapshot.phase === 'complete') {
+      // Cache hole cards so players can reveal them post-hand
+      const holeCards: Record<string, Card[]> = {};
+      for (const seat of snapshot.seats) {
+        if (seat && seat.holeCards.length > 0) holeCards[seat.playerId] = seat.holeCards;
+      }
+      this.lastHandHoleCards.set(tableId, holeCards);
+
       this.machines.delete(snapshot.handId);
       tableStateRepo.deleteHandSnapshot(snapshot.handId);
 
@@ -108,6 +121,14 @@ export class GameService {
       const deadlineMs = Date.now() + timeoutSeconds * 1000;
       tableStateRepo.setActionTimer(snapshot.handId, deadlineMs);
       this.scheduleTimeout(tableId, snapshot.handId, emit);
+
+      for (const event of events) {
+        if (event.type === 'action_required') {
+          (event.payload as Record<string, unknown>).deadlineMs = deadlineMs;
+        }
+        emit(event.type, event.payload, event.privateToPlayerId);
+      }
+      return;
     }
 
     for (const event of events) {
@@ -125,6 +146,10 @@ export class GameService {
     }, delayMs);
 
     this.autoDealTimeouts.set(tableId, handle);
+  }
+
+  getLastHandHoleCards(tableId: string, playerId: string): Card[] | null {
+    return this.lastHandHoleCards.get(tableId)?.[playerId] ?? null;
   }
 
   cancelAutoDeal(tableId: string): void {
@@ -188,7 +213,7 @@ export class GameService {
 
     if (occupied.length === 0) return 0;
 
-    const currentDealer = state.seats.findIndex((s) => s !== null);
+    const currentDealer = state.dealerSeatIndex;
     const next = occupied.find((i) => i > currentDealer);
     return next ?? occupied[0];
   }

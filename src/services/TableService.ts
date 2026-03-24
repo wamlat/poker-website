@@ -36,6 +36,7 @@ export class TableService {
       status: 'waiting',
       currentHandId: null,
       handNumber: 0,
+      dealerSeatIndex: -1,
       hostPlayerId: creatorPlayerId,
       settings: {
         ...DEFAULT_TABLE_SETTINGS,

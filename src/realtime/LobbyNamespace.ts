@@ -40,7 +40,7 @@ export function registerLobbyHandlers(io: Server): void {
         socket.join(`table:${payload.tableId}`);
         socket.data.currentTableId = payload.tableId;
 
-        socket.emit('table:state', state);
+        socket.emit('table:state', { ...state, isYouHost: socket.data.userId === state.hostPlayerId });
         socket.to(`table:${payload.tableId}`).emit('table:player_joined', {
           seatIndex,
           playerId: socket.data.userId,

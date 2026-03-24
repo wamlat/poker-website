@@ -16,7 +16,8 @@ function solverHandToEvaluated(solverHand: ReturnType<typeof SolverHand.solve>):
   return {
     rank: solverHand.rank,
     name: solverHand.name,
-    cards: solverHand.cardPool.map((c) => ({
+    // Use .cards (best 5) not .cardPool (all inputs) so findWinners can re-solve them
+    cards: solverHand.cards.map((c) => ({
       rank: c.value as Card['rank'],
       suit: c.suit as Card['suit'],
     })),
@@ -50,32 +51,35 @@ export class HandEvaluator {
     const holeCombos = combinations(holeCards, holeRequired);
     const boardCombos = combinations(communityCards, boardRequired);
 
-    let best: EvaluatedHand | null = null;
+    const candidates: ReturnType<typeof SolverHand.solve>[] = [];
 
     for (const hCombo of holeCombos) {
       for (const bCombo of boardCombos) {
         const fiveCards = [...hCombo, ...bCombo].map(cardToString);
-        const solved = SolverHand.solve(fiveCards);
-        const candidate = solverHandToEvaluated(solved);
-        if (best === null || candidate.rank > best.rank) {
-          best = candidate;
-        }
+        candidates.push(SolverHand.solve(fiveCards));
       }
     }
 
-    if (!best) throw new Error('Could not evaluate PLO hand — insufficient cards');
-    return best;
+    if (candidates.length === 0) throw new Error('Could not evaluate PLO hand — insufficient cards');
+
+    // Use Hand.winners() for proper rank+kicker comparison across all combinations
+    const best = SolverHand.winners(candidates)[0];
+    return solverHandToEvaluated(best);
   }
 
   /**
    * Determines the winner(s) among multiple evaluated hands.
-   * Returns indices of winners (handles ties).
+   * Returns indices of winners (handles ties including kicker comparison).
+   *
+   * Re-solves each hand's best-5 cards via pokersolver so that Hand.winners()
+   * does full rank+kicker comparison rather than just integer rank.
    */
   static findWinners(hands: EvaluatedHand[]): number[] {
     if (hands.length === 0) return [];
-    const maxRank = Math.max(...hands.map((h) => h.rank));
-    return hands.reduce<number[]>((acc, h, i) => {
-      if (h.rank === maxRank) acc.push(i);
+    const solverHands = hands.map((h) => SolverHand.solve(h.cards.map(cardToString)));
+    const winners = SolverHand.winners(solverHands);
+    return solverHands.reduce<number[]>((acc, h, i) => {
+      if (winners.includes(h)) acc.push(i);
       return acc;
     }, []);
   }

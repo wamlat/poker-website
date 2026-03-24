@@ -894,6 +894,7 @@ const S = {
   seats: [],
   mySeatIndex: -1,
   hostPlayerId: null,
+  isHostPlayer: false,   // set by server — avoids socket ID comparison bugs
   settings: null,
 
   // Hand
@@ -954,7 +955,7 @@ const $  = id => document.getElementById(id);
 const suits = { s:'♠', h:'♥', d:'♦', c:'♣' };
 const isRed  = s => s === 'h' || s === 'd';
 const fmt    = n => (n ?? 0).toLocaleString();
-const isHost = () => S.socket && S.hostPlayerId && S.socket.id === S.hostPlayerId;
+const isHost = () => S.isHostPlayer;
 
 function cardHTML(rank, suit, lg = false, back = false, flip = false) {
   const cls = `card${lg ? ' lg' : ''}${back ? ' back' : ''}${flip ? ' flip' : ''}`;
@@ -1125,10 +1126,11 @@ function connectSocket() {
 
   S.socket.on('hand:community_dealt', p => {
     enqueue(() => {
+      const newCount = p.cards.length;
       p.cards.forEach(c => S.communityCards.push(c));
       S.phase = p.phase;
       S.seatBets = {};
-      renderCommunity(true); // true = use flip animation
+      renderCommunity(newCount);
       $('phase-lbl').textContent = p.phase.toUpperCase();
       renderSeats();
       log(`<span class="ls">${p.phase.toUpperCase()}</span>`);
@@ -1339,8 +1341,9 @@ function enterTable(state) {
   S.tableConfig = state.config;
   S.seats       = state.seats;
   S.mySeatIndex = -1;
-  S.hostPlayerId = state.hostPlayerId;
-  S.settings    = state.settings;
+  S.hostPlayerId  = state.hostPlayerId;
+  S.isHostPlayer  = !!state.isYouHost;   // server tells us explicitly
+  S.settings      = state.settings;
   S.ledger      = {};
 
   state.seats.forEach((s, i) => {
@@ -1446,10 +1449,11 @@ function renderSeats() {
 }
 
 // ─── COMMUNITY ──────────────────────────────────────────────
-function renderCommunity(flip = false) {
+// newCount = how many cards at the END of S.communityCards are newly dealt this street
+function renderCommunity(newCount = 0) {
+  const total = S.communityCards.length;
   $('community').innerHTML = S.communityCards.map((c, i) => {
-    // New cards (at end) get flip animation; existing cards don't re-animate
-    const isNew = flip;
+    const isNew = i >= total - newCount;
     return cardHTML(c.rank, c.suit, true, false, isNew);
   }).join('');
 }

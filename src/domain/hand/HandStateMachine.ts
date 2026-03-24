@@ -265,7 +265,7 @@ export class HandStateMachine {
     const activePlayers = this.getActiveSeatStates().filter((s) => s.status === 'active');
     if (activePlayers.length === 0) {
       // All-in runout — check for run-it-twice
-      if (this.settings.runItTwice && this.hasMultipleStreetsRemaining()) {
+      if (this.settings.runItTwice && this.hasCardsRemaining()) {
         events.push(...this.runItTwice());
       } else {
         events.push(...this.advanceStreet());
@@ -278,19 +278,26 @@ export class HandStateMachine {
     return events;
   }
 
-  /** True when we are before the river and all players are all-in */
-  private hasMultipleStreetsRemaining(): boolean {
+  /** True when there is at least one community card still to come */
+  private hasCardsRemaining(): boolean {
     const phase = this.snapshot.phase;
-    return phase === HandPhase.PREFLOP || phase === HandPhase.FLOP;
+    return (
+      phase === HandPhase.PREFLOP ||
+      phase === HandPhase.FLOP ||
+      phase === HandPhase.TURN
+    );
   }
 
   /**
    * Run-it-twice: deal remaining board cards a second time and split the pot.
-   * Called only when all players are all-in and ≥2 streets remain.
-   * Emits community_dealt for remaining streets of board 2, then two showdown events.
+   * Called only when all players are all-in and ≥1 card remains.
+   * Board 2 shares the already-dealt community cards and gets fresh remaining cards.
    */
   private runItTwice(): HandEvent[] {
     const events: HandEvent[] = [];
+
+    // Cards already on board are shared between both runouts
+    const sharedCount = this.snapshot.communityCards.length;
 
     // Finish dealing board 1 (remaining streets after current)
     const board1Extra = this.dealRemainingBoard();
@@ -302,8 +309,8 @@ export class HandStateMachine {
     // Board 1 community cards (full board)
     const board1 = [...this.snapshot.communityCards];
 
-    // Deal board 2 from remaining deck
-    const board2 = this.buildSecondBoard();
+    // Board 2: re-use shared cards + deal fresh cards for the remaining streets
+    const board2 = [...board1.slice(0, sharedCount), ...this.deck.deal(5 - sharedCount)];
 
     events.push({
       type: 'run_two_board',
@@ -364,24 +371,6 @@ export class HandStateMachine {
     return result;
   }
 
-  /** Build a second board of the same total length as board1 but with fresh cards */
-  private buildSecondBoard(): Card[] {
-    // Re-use the first 3 cards (flop) if we're past the flop, else deal fresh full board
-    const communityLen = this.snapshot.communityCards.length; // after board1 dealt
-    const remaining = 5 - communityLen + this.countPhaseCards();
-    // Actually: second board is always 5 cards from remaining deck
-    return this.deck.deal(5);
-  }
-
-  /** Cards already on board before current street was dealt */
-  private countPhaseCards(): number {
-    switch (this.snapshot.phase) {
-      case HandPhase.FLOP: return 3;
-      case HandPhase.TURN: return 4;
-      default: return 0;
-    }
-  }
-
   private evaluateBoard(board: Card[], contenders: SeatState[]): SeatState[] {
     const evaluated = contenders.map((seat) => ({
       seat,
@@ -432,21 +421,36 @@ export class HandStateMachine {
       hand: this.variant.selectBestHand(seat.holeCards, this.snapshot.communityCards),
     }));
 
-    const ranks = evaluated.map((e) => e.hand);
-    const winnerIndices = HandEvaluator.findWinners(ranks);
-    const winners = winnerIndices.map((i) => evaluated[i]);
-
-    const sidePots = this.potManager.calculatePots(
+    // Calculate pots — players still active (not all-in) are eligible for all pots
+    const potResult = this.potManager.calculatePots(
       contenders.filter((s) => s.status === 'active').map((s) => s.playerId),
     );
 
-    const potPerWinner = Math.floor(this.snapshot.pot / winners.length);
-    for (const winner of winners) {
-      winner.seat.stack += potPerWinner;
-    }
-    const remainder = this.snapshot.pot % winners.length;
-    if (remainder > 0) {
-      winners[0].seat.stack += remainder;
+    // Determine which pots to award
+    const potsToAward =
+      potResult.sidePots.length > 0
+        ? potResult.sidePots
+        : [{ amount: this.snapshot.pot, eligiblePlayerIds: contenders.map((s) => s.playerId) }];
+
+    // Award each pot to the best hand(s) among eligible players
+    const totalWon = new Map<number, number>(); // seatIndex → total chips won
+
+    for (const pot of potsToAward) {
+      const eligible = evaluated.filter((e) => pot.eligiblePlayerIds.includes(e.seat.playerId));
+      if (eligible.length === 0) continue;
+
+      const winnerIndices = HandEvaluator.findWinners(eligible.map((e) => e.hand));
+      const potWinners = winnerIndices.map((i) => eligible[i]);
+
+      const share = Math.floor(pot.amount / potWinners.length);
+      const remainder = pot.amount % potWinners.length;
+
+      for (let i = 0; i < potWinners.length; i++) {
+        const w = potWinners[i];
+        const award = share + (i === 0 ? remainder : 0);
+        w.seat.stack += award;
+        totalWon.set(w.seat.seatIndex, (totalWon.get(w.seat.seatIndex) ?? 0) + award);
+      }
     }
 
     // Apply showdown reveal rule
@@ -458,7 +462,7 @@ export class HandStateMachine {
       if (revealRule === 'always') {
         reveal = true;
       } else if (revealRule === 'standard') {
-        const isWinner = winners.some((w) => w.seat.seatIndex === e.seat.seatIndex);
+        const isWinner = totalWon.has(e.seat.seatIndex);
         const isAggressor = lastAggressor === e.seat.seatIndex;
         reveal = isWinner || isAggressor;
       }
@@ -476,13 +480,16 @@ export class HandStateMachine {
       type: 'showdown',
       payload: {
         players: playersPayload,
-        winners: winners.map((w) => ({
-          seatIndex: w.seat.seatIndex,
-          playerId: w.seat.playerId,
-          amount: potPerWinner + (winners[0].seat.seatIndex === w.seat.seatIndex ? remainder : 0),
-          handName: w.hand.name,
-        })),
-        sidePots: sidePots.sidePots,
+        winners: Array.from(totalWon.entries()).map(([seatIndex, amount]) => {
+          const e = evaluated.find((ev) => ev.seat.seatIndex === seatIndex)!;
+          return {
+            seatIndex,
+            playerId: e.seat.playerId,
+            amount,
+            handName: e.hand.name,
+          };
+        }),
+        sidePots: potResult.sidePots,
       },
     });
 

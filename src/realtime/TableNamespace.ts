@@ -58,37 +58,34 @@ export function registerTableHandlers(io: Server): void {
       );
     });
 
-    socket.on('hand:reveal_cards', (payload) => {
+    socket.on('hand:reveal_cards', () => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
 
-      // Find the player's hole cards from the last completed hand snapshot
-      // (snapshot is deleted on complete, so we read from the table's seats)
+      const holeCards = gameService.getLastHandHoleCards(tableId, userId);
+      if (!holeCards?.length) return;
+
       const state = tableService.getTableState(tableId);
       if (!state) return;
 
       const seat = state.seats.find((s) => s?.playerId === userId);
       if (!seat) return;
 
-      // Hole cards are stored in the hand snapshot — if hand is complete they're gone.
-      // The client already has its own cards; we broadcast a reveal event
-      // using the cards from the payload (client sends its own cards back).
-      const clientCards = (payload as { handId: string; holeCards?: { rank: string; suit: string }[] }).holeCards;
-      if (!clientCards?.length) return;
-
       io.to(`table:${tableId}`).emit('hand:cards_revealed', {
         seatIndex: seat.seatIndex,
         playerId: userId,
-        holeCards: clientCards,
+        holeCards,
       });
     });
 
-    socket.on('table:start_hand', async () => {
+    socket.on('table:start_hand', () => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
+      const state = tableService.getTableState(tableId);
+      if (!state || state.hostPlayerId !== userId) return;
       // Cancel any pending auto-deal when host manually starts
       gameService.cancelAutoDeal(tableId);
-      await gameService.startHand(tableId, emit);
+      gameService.startHand(tableId, emit);
     });
 
     socket.on('table:adjust_chips', (payload) => {
@@ -162,6 +159,9 @@ export function registerTableHandlers(io: Server): void {
     socket.on('disconnect', async () => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (tableId) {
+        try {
+          await tableService.leaveTable(tableId, userId);
+        } catch { /* ignore */ }
         io.to(`table:${tableId}`).emit('table:player_left', {
           seatIndex: -1,
           playerId: userId,

@@ -178,6 +178,8 @@ export interface TableState {
   status: 'waiting' | 'running' | 'paused';
   currentHandId: string | null;
   handNumber: number;
+  /** Seat index of the last dealer button (-1 before first hand) */
+  dealerSeatIndex: number;
   hostPlayerId: string;
   settings: TableSettings;
 }
