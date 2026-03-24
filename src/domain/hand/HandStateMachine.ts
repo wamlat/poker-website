@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+const uuidv4 = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 import {
   Card,
   HandEvent,

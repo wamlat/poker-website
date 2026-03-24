@@ -1,6 +1,3 @@
 node_modules/
 dist/
-.env
-.env.local
 *.js.map
-prisma/migrations/

@@ -8,18 +8,16 @@ export function registerLobbyHandlers(io: Server): void {
   io.on('connection', (socket: AuthenticatedSocket) => {
     socket.join('lobby');
 
-    socket.on('lobby:list_tables', async () => {
-      try {
-        const tables = await tableService.listTables();
-        socket.emit('lobby:table_list', tables);
-      } catch (err) {
-        console.error('[Lobby] list_tables error:', err);
-      }
+    // Send table list on connect
+    socket.emit('lobby:table_list', tableService.listTables());
+
+    socket.on('lobby:list_tables', () => {
+      socket.emit('lobby:table_list', tableService.listTables());
     });
 
-    socket.on('lobby:create_table', async (payload) => {
+    socket.on('lobby:create_table', (payload) => {
       try {
-        const state = await tableService.createTable(payload);
+        const state = tableService.createTable(payload);
         socket.emit('lobby:table_created', state);
         io.to('lobby').emit('lobby:table_updated', state);
       } catch (err: unknown) {
@@ -30,9 +28,9 @@ export function registerLobbyHandlers(io: Server): void {
       }
     });
 
-    socket.on('lobby:join_table', async (payload) => {
+    socket.on('lobby:join_table', (payload) => {
       try {
-        const { state, seatIndex } = await tableService.joinTable(
+        const { state, seatIndex } = tableService.joinTable(
           payload.tableId,
           socket.data.userId,
           socket.data.username,
@@ -40,7 +38,6 @@ export function registerLobbyHandlers(io: Server): void {
           payload.seatIndex,
         );
 
-        // Move socket into the table room
         socket.join(`table:${payload.tableId}`);
         socket.data.currentTableId = payload.tableId;
 
