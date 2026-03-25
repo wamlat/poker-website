@@ -498,17 +498,42 @@
 
     /* ─── WINNER BANNER ──────────────────────────────────────── */
     .winner-banner {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      position: absolute; bottom: 8%; left: 50%; transform: translateX(-50%);
       background: rgba(7,10,13,0.94); border: 1px solid var(--gold);
-      padding: 22px 44px; border-radius: 4px;
-      text-align: center; z-index: 20;
+      padding: 14px 36px; border-radius: 4px;
+      text-align: center; z-index: 20; white-space: nowrap;
       animation: fadeUp 0.28s ease both; pointer-events: none;
     }
     .winner-banner h3 {
-      font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
-      color: var(--gold); margin-bottom: 8px;
+      font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--gold); margin-bottom: 6px;
     }
-    .winner-banner p { font-size: 20px; color: var(--text); }
+    .winner-banner p { font-size: 17px; color: var(--text); }
+
+    /* ─── BET SIZE SHORTCUTS ─────────────────────────────────── */
+    .pot-btns { display: flex; gap: 5px; align-items: center; }
+    .pot-btn {
+      padding: 5px 8px; font-size: 10px; letter-spacing: 0.12em;
+      text-transform: uppercase; border-radius: 2px; cursor: pointer;
+      background: rgba(255,255,255,0.05); color: var(--text-dim);
+      border: 1px solid rgba(255,255,255,0.1); transition: all 0.12s;
+      font-family: 'Cormorant Garamond', Georgia, serif;
+    }
+    .pot-btn:hover { border-color: var(--gold-dim); color: var(--gold); }
+    .bet-input-wrap { position: relative; display: inline-flex; align-items: center; }
+    #bet-val {
+      font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--gold);
+      min-width: 75px; cursor: text; padding: 2px 4px; border-radius: 2px;
+    }
+    #bet-val-input {
+      display: none; font-family: 'JetBrains Mono', monospace; font-size: 14px;
+      color: var(--gold); width: 90px; background: rgba(255,255,255,0.06);
+      border: 1px solid var(--gold-dim); border-radius: 2px; padding: 2px 6px; outline: none;
+    }
+    .kbd-hint {
+      font-size: 9px; letter-spacing: 0.1em; color: var(--text-dim);
+      display: block; text-align: center; margin-top: 3px; font-family: 'JetBrains Mono', monospace;
+    }
 
     /* ─── OPTIONS MODAL ──────────────────────────────────────── */
     #options-modal .modal {
@@ -744,9 +769,19 @@
     <div class="my-cards" id="my-cards"></div>
     <div id="action-btns" style="display:flex;gap:8px;"></div>
     <div class="bet-wrap hidden" id="bet-wrap">
+      <div class="pot-btns">
+        <button class="pot-btn" onclick="setPotFraction(0.25)">¼</button>
+        <button class="pot-btn" onclick="setPotFraction(0.33)">⅓</button>
+        <button class="pot-btn" onclick="setPotFraction(0.5)">½</button>
+        <button class="pot-btn" onclick="setPotFraction(0.75)">¾</button>
+        <button class="pot-btn" onclick="setPotFraction(1)">Pot</button>
+      </div>
       <span class="bet-wrap-label">Amount</span>
       <input type="range" id="bet-slider" min="0" max="1000" value="200" oninput="onSlider()">
-      <span id="bet-val">200</span>
+      <div class="bet-input-wrap">
+        <span id="bet-val" title="Double-click to type" ondblclick="openBetInput()">200</span>
+        <input type="number" id="bet-val-input" onblur="closeBetInput()" onkeydown="betInputKey(event)">
+      </div>
     </div>
     <div class="action-spacer"></div>
   </div>
@@ -1050,8 +1085,10 @@ function variantCards(v) {
 //  EVENT QUEUE — delays consecutive community_dealt events
 //  to create the 0.5s gap on all-in runouts
 // ════════════════════════════════════════════════════════════
-function enqueue(fn, isCommunity) {
-  S.eventQueue.push({ fn, isCommunity });
+// delay: 0=immediate, 'community'=500ms gap between consecutive community cards,
+//        'board2'=2000ms pause before second RIT board
+function enqueue(fn, delay = 0) {
+  S.eventQueue.push({ fn, delay });
   if (!S.queueProcessing) drainQueue();
 }
 
@@ -1059,12 +1096,14 @@ function drainQueue() {
   if (S.eventQueue.length === 0) { S.queueProcessing = false; return; }
   S.queueProcessing = true;
 
-  const { fn, isCommunity } = S.eventQueue.shift();
-  const delay = (isCommunity && S.lastEventWasCommunity) ? 500 : 0;
-  S.lastEventWasCommunity = isCommunity;
+  const { fn, delay } = S.eventQueue.shift();
+  const ms = delay === 'community' ? (S.lastEventWasCommunity ? 500 : 0)
+           : delay === 'board2'   ? 2000
+           : 0;
+  S.lastEventWasCommunity = (delay === 'community');
 
-  if (delay > 0) {
-    setTimeout(() => { fn(); drainQueue(); }, delay);
+  if (ms > 0) {
+    setTimeout(() => { fn(); drainQueue(); }, ms);
   } else {
     fn(); drainQueue();
   }
@@ -1144,8 +1183,14 @@ function connectSocket() {
 
   S.socket.on('table:chips_adjusted', d => {
     if (S.seats && S.seats[d.seatIndex]) {
+      const oldStack = S.seats[d.seatIndex].stack;
       S.seats[d.seatIndex].stack = d.newStack;
-      if (S.ledger[d.targetPlayerId]) S.ledger[d.targetPlayerId].currentStack = d.newStack;
+      if (S.ledger[d.targetPlayerId]) {
+        // Adjust totalBuyIn by the same delta so net profit/loss is unaffected
+        const delta = d.newStack - oldStack;
+        S.ledger[d.targetPlayerId].totalBuyIn += delta;
+        S.ledger[d.targetPlayerId].currentStack = d.newStack;
+      }
       renderSeats();
       // Live update stack in open options modal
       const stackEl = $(`pr-stack-${d.seatIndex}`);
@@ -1208,7 +1253,7 @@ function connectSocket() {
       renderSeats();
       soundCard();
       log(`<span class="ls">${p.phase.toUpperCase()}</span>`);
-    }, true);
+    }, 'community');
   });
 
   S.socket.on('hand:run_two_board', p => {
@@ -1223,7 +1268,8 @@ function connectSocket() {
       const existing = $('run-two-board');
       if (existing) existing.remove();
       center.appendChild(runTwo);
-    }, true);
+      soundCard();
+    }, 'board2');
   });
 
   S.socket.on('hand:action_required', p => {
@@ -1240,7 +1286,7 @@ function connectSocket() {
         clearActions();
         if (p.deadlineMs) startSeatTimer(p.seatIndex, p.deadlineMs);
       }
-    }, false);
+    });
   });
 
   S.socket.on('hand:action_taken', p => {
@@ -1257,7 +1303,7 @@ function connectSocket() {
       if (p.action !== 'fold' && p.action !== 'check') soundChip();
       renderSeats();
       clearActions();
-    }, false);
+    });
   });
 
   S.socket.on('hand:showdown', p => {
@@ -1306,7 +1352,7 @@ function connectSocket() {
       if (S.mySeatIndex >= 0 && S.myCards.length) {
         showRevealButton();
       }
-    }, false);
+    });
   });
 
   S.socket.on('hand:cards_revealed', p => {
@@ -1357,10 +1403,18 @@ function connectSocket() {
       S.winnerTmo = setTimeout(() => {
         $('winner-banner').classList.add('hidden');
       }, 4500);
-    }, false);
+    });
   });
 
   S.socket.on('hand:error', p => log(`<span class="lf">Error: ${p.message}</span>`));
+
+  S.socket.on('table:host_changed', d => {
+    S.hostPlayerId = d.newHostPlayerId;
+    S.isHostPlayer = d.newHostPlayerId === S.socket.id;
+    renderSeats();
+    if ($('options-modal') && !$('options-modal').classList.contains('hidden')) populateOptions();
+    log(`<span class="ls">Host transferred</span>`);
+  });
 
   S.socket.on('hand:rit_vote_request', p => {
     if (!p.eligiblePlayerIds.includes(S.socket.id)) return;
@@ -1439,6 +1493,36 @@ function confirmJoin() {
 //  TABLE
 // ════════════════════════════════════════════════════════════
 function enterTable(state) {
+  // Reset all hand state from any previous table
+  S.handId = null;
+  S.phase = null;
+  S.communityCards = [];
+  S.pot = 0;
+  S.validActions = [];
+  S.currentActorSeat = -1;
+  S.myCards = [];
+  S.seatBets = {};
+  S.showdownCards = {};
+  S.eventQueue = [];
+  S.queueProcessing = false;
+  S.lastEventWasCommunity = false;
+  S.pendingRitHandId = null;
+  if (S.ritCountdownIv) { clearInterval(S.ritCountdownIv); S.ritCountdownIv = null; }
+  if (S.winnerTmo) { clearTimeout(S.winnerTmo); S.winnerTmo = null; }
+  clearTimer(); clearSeatTimer();
+  // Clean up stale DOM from previous hand
+  const rtb = $('run-two-board');
+  if (rtb) rtb.remove();
+  $('winner-banner').classList.add('hidden');
+  $('rit-modal').classList.add('hidden');
+  $('my-cards').innerHTML = '';
+  $('action-btns').innerHTML = '';
+  $('bet-wrap').classList.add('hidden');
+  $('rabbit-cards').classList.add('hidden');
+  $('rabbit-cards').innerHTML = '';
+  $('community').innerHTML = '';
+  $('phase-lbl').textContent = '';
+
   S.tableId     = state.config.tableId;
   S.tableConfig = state.config;
   S.seats       = state.seats;
@@ -1577,6 +1661,8 @@ function buildActions() {
   let betMin = 0, betMax = 0, hasBet = false;
 
   S.validActions.forEach(va => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;';
     const btn = document.createElement('button');
     btn.className = `action-btn ${va.type}`;
     let lbl = va.type.toUpperCase();
@@ -1596,7 +1682,17 @@ function buildActions() {
     } else {
       btn.onclick = () => doAction(va.type, va.amount);
     }
-    btns.appendChild(btn);
+    wrap.appendChild(btn);
+
+    // Keyboard hint
+    const hint = va.type === 'fold' ? 'F' : (va.type === 'check' || va.type === 'call') ? 'C' : '';
+    if (hint) {
+      const kbd = document.createElement('span');
+      kbd.className = 'kbd-hint';
+      kbd.textContent = `[${hint}]`;
+      wrap.appendChild(kbd);
+    }
+    btns.appendChild(wrap);
   });
 
   const wrap = $('bet-wrap');
@@ -1762,6 +1858,7 @@ function buildPlayerList(locked) {
     row.className = 'player-row';
 
     const isHostP = seat.playerId === S.hostPlayerId;
+    const isMe = seat.playerId === S.socket?.id;
     row.innerHTML = `
       <div class="player-row-name">${seat.displayName}${isHostP ? ' <span class="host-badge">host</span>' : ''}</div>
       <div class="player-row-stack" id="pr-stack-${seat.seatIndex}">${fmt(seat.stack)}</div>
@@ -1769,6 +1866,8 @@ function buildPlayerList(locked) {
         <input type="number" class="chip-amount" id="pr-amt-${seat.seatIndex}" value="1000" min="1">
         <button class="chip-btn" title="Add chips" onclick="adjustChips('${seat.playerId}',${seat.seatIndex},1)">+</button>
         <button class="chip-btn" title="Remove chips" onclick="adjustChips('${seat.playerId}',${seat.seatIndex},-1)">−</button>
+        ${!isMe ? `<button class="chip-btn" title="Remove from table" style="color:#e06060;border-color:rgba(192,64,58,0.3)" onclick="removePlayer('${seat.playerId}')">✕</button>` : ''}
+        ${!isHostP && !isMe ? `<button class="chip-btn" title="Make host" style="font-size:11px;color:var(--gold)" onclick="transferHost('${seat.playerId}')">★</button>` : ''}
       ` : ''}
     `;
     list.appendChild(row);
@@ -1781,6 +1880,19 @@ function adjustChips(playerId, seatIndex, sign) {
   S.socket.emit('table:adjust_chips', { targetPlayerId: playerId, amount: sign * amt });
 }
 
+function removePlayer(playerId) {
+  if (!isHost()) return;
+  if (!confirm('Remove this player from the table?')) return;
+  S.socket.emit('table:remove_player', { targetPlayerId: playerId });
+  buildPlayerList(false);
+}
+
+function transferHost(playerId) {
+  if (!isHost()) return;
+  if (!confirm('Transfer host to this player?')) return;
+  S.socket.emit('table:transfer_host', { newHostPlayerId: playerId });
+}
+
 function changeVariant(variant) {
   if (!isHost()) return;
   S.socket.emit('table:change_variant', { variant });
@@ -1790,6 +1902,69 @@ function pushSetting(key, value) {
   if (!isHost()) return;
   S.socket.emit('table:update_settings', { patch: { [key]: value } });
 }
+
+// ════════════════════════════════════════════════════════════
+//  BET SIZING HELPERS
+// ════════════════════════════════════════════════════════════
+function setPotFraction(fraction) {
+  const sl = $('bet-slider');
+  if (!sl) return;
+  const raw = Math.round(S.pot * fraction);
+  const clamped = Math.max(parseInt(sl.min), Math.min(parseInt(sl.max), raw));
+  sl.value = clamped;
+  $('bet-val').textContent = fmt(clamped);
+}
+
+function openBetInput() {
+  const val = $('bet-val');
+  const inp = $('bet-val-input');
+  inp.value = parseInt($('bet-slider').value);
+  val.style.display = 'none';
+  inp.style.display = 'block';
+  inp.focus(); inp.select();
+}
+
+function closeBetInput() {
+  const val = $('bet-val');
+  const inp = $('bet-val-input');
+  const sl = $('bet-slider');
+  const n = parseInt(inp.value);
+  if (!isNaN(n)) {
+    const clamped = Math.max(parseInt(sl.min), Math.min(parseInt(sl.max), n));
+    sl.value = clamped;
+    val.textContent = fmt(clamped);
+  }
+  inp.style.display = 'none';
+  val.style.display = '';
+}
+
+function betInputKey(e) {
+  if (e.key === 'Enter') closeBetInput();
+  if (e.key === 'Escape') {
+    $('bet-val-input').style.display = 'none';
+    $('bet-val').style.display = '';
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  KEYBOARD SHORTCUTS
+// ════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  // Don't fire if typing in an input
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (S.mySeatIndex < 0 || S.currentActorSeat !== S.mySeatIndex) return;
+
+  const validTypes = S.validActions.map(a => a.type);
+  if (e.key === 'f' || e.key === 'F') {
+    if (validTypes.includes('fold')) { doAction('fold'); }
+  } else if (e.key === 'c' || e.key === 'C') {
+    if (validTypes.includes('check')) doAction('check');
+    else if (validTypes.includes('call')) {
+      const ca = S.validActions.find(a => a.type === 'call');
+      if (ca) doAction('call', ca.amount);
+    }
+  }
+});
 
 function voteRIT(yes) {
   if (!S.pendingRitHandId) return;

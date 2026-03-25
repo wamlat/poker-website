@@ -25,8 +25,9 @@ export type VariantName = 'NLHE' | 'PLO4' | 'PLO5' | 'PLO6';
 
 export interface BettingState {
   potSize: number;
-  currentBet: number;       // amount to call
-  playerStack: number;
+  currentBet: number;       // total street bet to call/beat
+  playerStack: number;      // chips remaining in stack
+  playerStreetBet: number;  // chips already committed this street by this player
   bigBlind: number;
   lastRaiseSize: number;
 }
@@ -134,7 +135,8 @@ export type HandEventType =
   | 'showdown'
   | 'rabbit_cards'         // rabbit hunting — future cards revealed after fold win
   | 'hand_complete'
-  | 'rit_vote_needed';     // pause before all-in runout to collect run-it-twice votes
+  | 'rit_vote_needed'      // pause before all-in runout to collect run-it-twice votes
+  | 'hand_error';          // validation failure — private to acting player
 
 export interface HandEvent {
   type: HandEventType;

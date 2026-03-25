@@ -8,15 +8,18 @@ export class NoLimitEngine implements BettingEngine {
     // Min raise = current bet + max(lastRaiseSize, bigBlind)
     const raiseIncrement = Math.max(state.lastRaiseSize, state.bigBlind);
     const minTotal = state.currentBet + raiseIncrement;
+    // Max total street commitment = already committed + remaining stack
+    const maxTotal = state.playerStreetBet + state.playerStack;
 
     return {
-      min: Math.min(minTotal, state.playerStack),
-      max: state.playerStack, // can go all-in for any amount
+      min: Math.min(minTotal, maxTotal),
+      max: maxTotal,
     };
   }
 
   isValidBetAmount(amount: number, state: BettingState): boolean {
-    if (amount === state.playerStack) return true; // all-in always valid
+    const allIn = state.playerStreetBet + state.playerStack;
+    if (amount === allIn) return true; // all-in always valid
     const bounds = this.getRaiseBounds(state);
     return amount >= bounds.min && amount <= bounds.max;
   }

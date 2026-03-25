@@ -1,6 +1,7 @@
 const randomUUID = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 import { tableStateRepo } from '../repositories/TableStateRepository';
 import { config } from '../config';
+import { getVariant } from '../domain/variants';
 import { DEFAULT_TABLE_SETTINGS, Seat, TableConfig, TableSettings, TableState, VariantName } from '../types';
 
 export interface CreateTableOptions {
@@ -18,11 +19,14 @@ export class TableService {
   createTable(options: CreateTableOptions, creatorPlayerId: string): TableState {
     const tableId = randomUUID();
 
+    const variant = getVariant(options.variant);
+    const maxSeats = Math.min(options.maxSeats, variant.maxPlayers);
+
     const tableConfig: TableConfig = {
       tableId,
       name: options.name,
       variant: options.variant,
-      maxSeats: options.maxSeats,
+      maxSeats,
       smallBlind: options.smallBlind,
       bigBlind: options.bigBlind,
       minBuyIn: options.minBuyIn,
@@ -32,7 +36,7 @@ export class TableService {
 
     const state: TableState = {
       config: tableConfig,
-      seats: Array(options.maxSeats).fill(null),
+      seats: Array(maxSeats).fill(null),
       status: 'waiting',
       currentHandId: null,
       handNumber: 0,
@@ -139,6 +143,31 @@ export class TableService {
       state.config.actionTimeoutSeconds = patch.actionTimeoutSeconds;
     }
 
+    tableStateRepo.saveTableState(tableId, state);
+    return state;
+  }
+
+  removePlayer(tableId: string, requesterPlayerId: string, targetPlayerId: string): { state: TableState; seatIndex: number } {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    if (state.hostPlayerId !== requesterPlayerId) throw new Error('Only the host can remove players');
+    if (state.status === 'running') throw new Error('Cannot remove players during a hand');
+
+    const seatIndex = state.seats.findIndex((s) => s?.playerId === targetPlayerId);
+    if (seatIndex === -1) throw new Error('Player not found at table');
+
+    state.seats[seatIndex] = null;
+    tableStateRepo.saveTableState(tableId, state);
+    return { state, seatIndex };
+  }
+
+  transferHost(tableId: string, requesterPlayerId: string, newHostPlayerId: string): TableState {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    if (state.hostPlayerId !== requesterPlayerId) throw new Error('Only the host can transfer ownership');
+    if (!state.seats.some((s) => s?.playerId === newHostPlayerId)) throw new Error('New host must be seated at the table');
+
+    state.hostPlayerId = newHostPlayerId;
     tableStateRepo.saveTableState(tableId, state);
     return state;
   }

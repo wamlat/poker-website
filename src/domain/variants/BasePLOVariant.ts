@@ -13,7 +13,8 @@ export abstract class BasePLOVariant implements GameVariant {
 
   readonly bettingStructure = 'pot-limit' as const;
   readonly minPlayers = 2;
-  readonly maxPlayers = 9;
+  // Overridden by subclasses — PLO6 needs fewer seats to avoid deck exhaustion
+  readonly maxPlayers: number = 9;
 
   selectBestHand(holeCards: Card[], communityCards: Card[]): EvaluatedHand {
     return HandEvaluator.bestPLOHand(holeCards, communityCards, 2, 3);

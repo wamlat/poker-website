@@ -95,6 +95,7 @@ export interface ServerToClientEvents {
   'table:player_joined': (data: { seatIndex: number; playerId: string; displayName: string; stack: number }) => void;
   'table:player_left': (data: { seatIndex: number; playerId: string }) => void;
   'table:settings_updated': (settings: TableSettings) => void;
+  'table:host_changed': (payload: { newHostPlayerId: string }) => void;
   'table:chips_adjusted': (payload: ChipsAdjustedPayload) => void;
   'hand:started': (payload: HandStartedPayload) => void;
   'hand:cards_dealt': (payload: CardsDealtPayload) => void;

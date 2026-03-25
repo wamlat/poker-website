@@ -71,18 +71,22 @@ export class HandStateMachine {
     const sbSeat = this.snapshot.seats[this.snapshot.smallBlindSeatIndex] as SeatState;
     const sbAmount = Math.min(this.snapshot.smallBlind, sbSeat.stack);
     this.postBlind(sbSeat, sbAmount);
+    if (sbSeat.stack === 0) sbSeat.status = 'all-in';
 
     // Post big blind
     const bbSeat = this.snapshot.seats[this.snapshot.bigBlindSeatIndex] as SeatState;
     const bbAmount = Math.min(this.snapshot.bigBlind, bbSeat.stack);
     this.postBlind(bbSeat, bbAmount);
+    if (bbSeat.stack === 0) bbSeat.status = 'all-in';
 
     this.snapshot.currentBet = bbAmount;
     this.snapshot.lastRaiseSize = bbAmount;
     this.snapshot.phase = HandPhase.PREFLOP;
 
-    // First to act preflop: seat after BB
-    this.snapshot.currentActorSeatIndex = this.nextActiveAfter(this.snapshot.bigBlindSeatIndex);
+    // First to act preflop: seat after BB (skip if everyone is already all-in)
+    const activeSeatCount = this.getActiveSeatStates().filter((s) => s.status === 'active').length;
+    this.snapshot.currentActorSeatIndex =
+      activeSeatCount > 0 ? this.nextActiveAfter(this.snapshot.bigBlindSeatIndex) : null;
 
     events.push({
       type: 'hand_started',
@@ -106,7 +110,12 @@ export class HandStateMachine {
       });
     }
 
-    events.push(...this.emitActionRequired());
+    if (this.snapshot.currentActorSeatIndex === null) {
+      // Both players all-in from their blinds — run the board immediately
+      events.push(...this.advanceStreet());
+    } else {
+      events.push(...this.emitActionRequired());
+    }
 
     return events;
   }
@@ -117,8 +126,8 @@ export class HandStateMachine {
     if (!result.valid) {
       return [
         {
-          type: 'action_taken',
-          payload: { error: result.reason },
+          type: 'hand_error',
+          payload: { code: result.reason, message: `Invalid action: ${result.reason}` },
           privateToPlayerId: action.playerId,
         },
       ];

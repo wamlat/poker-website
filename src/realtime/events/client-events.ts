@@ -43,6 +43,8 @@ export interface ClientToServerEvents {
   'table:adjust_chips': (payload: AdjustChipsPayload) => void;
   'table:change_variant': (payload: { variant: VariantName }) => void;
   'table:update_settings': (payload: UpdateSettingsPayload) => void;
+  'table:remove_player': (payload: { targetPlayerId: string }) => void;
+  'table:transfer_host': (payload: { newHostPlayerId: string }) => void;
   'hand:action': (payload: HandActionPayload) => void;
   'hand:reveal_cards': (payload: { handId: string }) => void;
   'hand:rit_vote': (payload: { handId: string; yes: boolean }) => void;

@@ -19,6 +19,7 @@ const EVENT_MAP: Record<string, string> = {
   rabbit_cards:    'hand:rabbit',
   hand_complete:   'hand:complete',
   rit_vote_needed: 'hand:rit_vote_request',
+  hand_error:      'hand:error',
 };
 
 export function registerTableHandlers(io: Server): void {
@@ -86,7 +87,10 @@ export function registerTableHandlers(io: Server): void {
       if (!state || state.hostPlayerId !== userId) return;
       // Cancel any pending auto-deal when host manually starts
       gameService.cancelAutoDeal(tableId);
-      gameService.startHand(tableId, emit);
+      const started = gameService.startHand(tableId, emit);
+      if (!started) {
+        socket.emit('hand:error', { code: 'CANNOT_START', message: 'Need at least 2 players with enough chips' });
+      }
     });
 
     socket.on('table:adjust_chips', (payload) => {
@@ -143,6 +147,29 @@ export function registerTableHandlers(io: Server): void {
       }
     });
 
+    socket.on('table:remove_player', (payload) => {
+      const tableId = socket.data.currentTableId as string | undefined;
+      if (!tableId) return;
+      try {
+        const { state, seatIndex } = tableService.removePlayer(tableId, userId, payload.targetPlayerId);
+        io.to(`table:${tableId}`).emit('table:player_left', { playerId: payload.targetPlayerId, seatIndex });
+        io.to('lobby').emit('lobby:table_updated', state);
+      } catch (err: unknown) {
+        socket.emit('hand:error', { code: 'REMOVE_PLAYER_FAILED', message: err instanceof Error ? err.message : 'Failed' });
+      }
+    });
+
+    socket.on('table:transfer_host', (payload) => {
+      const tableId = socket.data.currentTableId as string | undefined;
+      if (!tableId) return;
+      try {
+        tableService.transferHost(tableId, userId, payload.newHostPlayerId);
+        io.to(`table:${tableId}`).emit('table:host_changed', { newHostPlayerId: payload.newHostPlayerId });
+      } catch (err: unknown) {
+        socket.emit('hand:error', { code: 'TRANSFER_HOST_FAILED', message: err instanceof Error ? err.message : 'Failed' });
+      }
+    });
+
     socket.on('hand:rit_vote', (payload) => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
@@ -160,6 +187,8 @@ export function registerTableHandlers(io: Server): void {
         socket.leave(`table:${tableId}`);
         io.to(`table:${tableId}`).emit('table:player_left', { playerId: userId, seatIndex });
         socket.data.currentTableId = undefined;
+        const updated = tableService.getTableState(tableId);
+        if (updated) io.to('lobby').emit('lobby:table_updated', updated);
       } catch (err) {
         console.error('[Table] leave error:', err);
       }
@@ -177,6 +206,8 @@ export function registerTableHandlers(io: Server): void {
           seatIndex,
           playerId: userId,
         });
+        const updated = tableService.getTableState(tableId);
+        if (updated) io.to('lobby').emit('lobby:table_updated', updated);
       }
     });
   });

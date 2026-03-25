@@ -1,5 +1,4 @@
 import {
-  ActionType,
   BettingState,
   HandSnapshot,
   PlayerAction,
@@ -60,25 +59,23 @@ export class ActionValidator {
     if (snapshot.currentBet === seat.currentStreetBet) {
       // No bet to call — can check
       actions.push({ type: 'check' });
-    } else {
-      // There is a bet to call.
-      // For pot-limit: always show 'call' (even if going all-in — no separate all-in button).
-      // For no-limit: show 'call' only when it doesn't consume the whole stack.
-      if (isPotLimit || callAmount < seat.stack) {
-        actions.push({ type: 'call', amount: callAmount });
-      }
+    } else if (callAmount > 0) {
+      // Always show call; callAmount is already capped at seat.stack so it handles
+      // the all-in-call case naturally (callAmount === seat.stack).
+      actions.push({ type: 'call', amount: callAmount });
     }
 
-    // Explicit all-in shove: only for no-limit games.
-    // In pot-limit the max raise already caps at stack, so no separate button is needed.
-    if (!isPotLimit && seat.stack > 0) {
+    // Explicit all-in shove: only for no-limit, and only when it's aggressive
+    // (total commitment would exceed the current bet — i.e. a real raise, not a call).
+    if (!isPotLimit && seat.currentStreetBet + seat.stack > snapshot.currentBet) {
       actions.push({ type: 'all-in', amount: seat.stack });
     }
 
-    // Bet (no current bet) or Raise (responding to a bet)
+    // Bet (no current bet) or Raise (responding to a bet).
+    // Only show when the player can actually raise *above* the current bet.
     const hasBet = snapshot.currentBet > 0;
     const bounds = this.bettingEngine.getRaiseBounds(bettingState);
-    if (bounds.min > 0 && bounds.min <= bounds.max) {
+    if (bounds.min > 0 && bounds.min <= bounds.max && bounds.max > snapshot.currentBet) {
       if (hasBet) {
         actions.push({ type: 'raise', minAmount: bounds.min, maxAmount: bounds.max });
       } else {
@@ -94,6 +91,7 @@ export class ActionValidator {
       potSize: snapshot.pot,
       currentBet: snapshot.currentBet,
       playerStack: seat.stack,
+      playerStreetBet: seat.currentStreetBet,
       bigBlind: snapshot.bigBlind,
       lastRaiseSize: snapshot.lastRaiseSize,
     };
