@@ -1,4 +1,4 @@
-const uuidv4 = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+import { randomUUID as uuidv4 } from 'crypto';
 import {
   Card,
   HandEvent,
@@ -58,6 +58,20 @@ export class HandStateMachine {
     return { ...this.snapshot };
   }
 
+  /** Returns the current action_required payload without advancing state. Used for reconnect resync. */
+  peekActionRequired(): Record<string, unknown> | null {
+    if (this.snapshot.currentActorSeatIndex === null) return null;
+    const seat = this.snapshot.seats[this.snapshot.currentActorSeatIndex] as SeatState;
+    if (!seat) return null;
+    return {
+      seatIndex: seat.seatIndex,
+      playerId: seat.playerId,
+      validActions: this.validator.computeValidActions(this.snapshot, seat),
+      pot: this.snapshot.pot,
+      playerStreetBet: seat.currentStreetBet,
+    };
+  }
+
   /** Start the hand: post blinds and deal hole cards */
   start(): HandEvent[] {
     const events: HandEvent[] = [];
@@ -83,10 +97,28 @@ export class HandStateMachine {
     this.snapshot.lastRaiseSize = bbAmount;
     this.snapshot.phase = HandPhase.PREFLOP;
 
-    // First to act preflop: seat after BB (skip if everyone is already all-in)
+    // Optional straddle: UTG (seat after BB) posts 2×BB voluntarily
+    let straddleSeatIndex: number | null = null;
+    if (this.settings.straddleEnabled && seats.length >= 3) {
+      const utgSeatIndex = this.nextActiveAfter(this.snapshot.bigBlindSeatIndex);
+      const utgSeat = this.snapshot.seats[utgSeatIndex] as SeatState | null;
+      const straddleAmount = this.snapshot.bigBlind * 2;
+      if (utgSeat && utgSeat.stack >= straddleAmount) {
+        this.postBlind(utgSeat, straddleAmount);
+        if (utgSeat.stack === 0) utgSeat.status = 'all-in';
+        this.snapshot.currentBet = straddleAmount;
+        this.snapshot.lastRaiseSize = straddleAmount;
+        straddleSeatIndex = utgSeatIndex;
+        this.snapshot.straddleSeatIndex = utgSeatIndex;
+      }
+    }
+
+    // First to act preflop: seat after straddle (if any), else after BB
+    // Skip if everyone is already all-in
     const activeSeatCount = this.getActiveSeatStates().filter((s) => s.status === 'active').length;
+    const lastBlindSeat = straddleSeatIndex ?? this.snapshot.bigBlindSeatIndex;
     this.snapshot.currentActorSeatIndex =
-      activeSeatCount > 0 ? this.nextActiveAfter(this.snapshot.bigBlindSeatIndex) : null;
+      activeSeatCount > 0 ? this.nextActiveAfter(lastBlindSeat) : null;
 
     events.push({
       type: 'hand_started',
@@ -96,6 +128,7 @@ export class HandStateMachine {
         dealerButtonSeatIndex: this.snapshot.dealerButtonSeatIndex,
         smallBlindSeatIndex: this.snapshot.smallBlindSeatIndex,
         bigBlindSeatIndex: this.snapshot.bigBlindSeatIndex,
+        straddleSeatIndex,
         pot: this.snapshot.pot,
       },
     });
@@ -731,6 +764,7 @@ export class HandStateMachine {
       actionDeadlineMs: null,
       bigBlind: config.bigBlind,
       smallBlind: config.smallBlind,
+      straddleSeatIndex: null,
     };
   }
 }

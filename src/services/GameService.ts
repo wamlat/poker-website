@@ -26,7 +26,8 @@ export class GameService {
     if (!state || state.status === 'running') return false;
 
     const readySeats = state.seats.filter(
-      (s): s is NonNullable<typeof s> => s !== null && s.stack >= state.config.bigBlind,
+      (s): s is NonNullable<typeof s> =>
+        s !== null && s.stack >= state.config.bigBlind && s.status !== 'sitting-out',
     );
 
     if (readySeats.length < 2) return false;
@@ -188,6 +189,32 @@ export class GameService {
     return this.lastHandHoleCards.get(tableId)?.[playerId] ?? null;
   }
 
+  /** Returns the current hand snapshot for a table, or null if no hand is running. */
+  getSnapshot(tableId: string): HandSnapshot | null {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state?.currentHandId) return null;
+    return this.machines.get(state.currentHandId)?.getSnapshot() ?? null;
+  }
+
+  /** Returns data needed to resync a reconnecting player to an active hand. */
+  getReconnectHandState(tableId: string): {
+    snapshot: HandSnapshot;
+    actionRequired: Record<string, unknown> | null;
+    deadlineMs: number | null;
+  } | null {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state?.currentHandId) return null;
+    const machine = this.machines.get(state.currentHandId);
+    if (!machine) return null;
+    const snapshot = machine.getSnapshot();
+    const actionRequired = machine.peekActionRequired();
+    const deadlineMs = tableStateRepo.getActionTimer(state.currentHandId);
+    if (actionRequired && deadlineMs !== null) {
+      actionRequired.deadlineMs = deadlineMs;
+    }
+    return { snapshot, actionRequired, deadlineMs };
+  }
+
   cancelAutoDeal(tableId: string): void {
     const handle = this.autoDealTimeouts.get(tableId);
     if (handle) {
@@ -331,7 +358,7 @@ export class GameService {
 
   private nextDealerButton(state: TableState): number {
     const occupied = state.seats
-      .map((s, i) => (s && s.stack >= state.config.bigBlind ? i : -1))
+      .map((s, i) => (s && s.stack >= state.config.bigBlind && s.status !== 'sitting-out' ? i : -1))
       .filter((i) => i !== -1);
 
     if (occupied.length === 0) return 0;

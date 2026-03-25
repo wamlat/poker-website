@@ -286,11 +286,68 @@ export function registerTableHandlers(io: Server): void {
       }
     });
 
+    // ── Sit out / come back ───────────────────────────────────────────────────
+
+    socket.on('table:sit_out', () => {
+      const tableId = socket.data.currentTableId as string | undefined;
+      if (!tableId) return;
+      try {
+        const state = tableService.sitOut(tableId, userId);
+        const seat = state.seats.find((s) => s?.playerId === userId);
+        if (seat) {
+          io.to(`table:${tableId}`).emit('table:player_updated', {
+            seatIndex: seat.seatIndex,
+            playerId: userId,
+            status: seat.status,
+          });
+        }
+      } catch { /* ignore */ }
+    });
+
+    socket.on('table:come_back', () => {
+      const tableId = socket.data.currentTableId as string | undefined;
+      if (!tableId) return;
+      try {
+        const state = tableService.comeBack(tableId, userId);
+        const seat = state.seats.find((s) => s?.playerId === userId);
+        if (seat) {
+          io.to(`table:${tableId}`).emit('table:player_updated', {
+            seatIndex: seat.seatIndex,
+            playerId: userId,
+            status: seat.status,
+          });
+        }
+      } catch { /* ignore */ }
+    });
+
+    // ── Chat ─────────────────────────────────────────────────────────────────
+
+    socket.on('table:chat', (payload: { message: string }) => {
+      const tableId = socket.data.currentTableId as string | undefined;
+      if (!tableId) return;
+      const state = tableService.getTableState(tableId);
+      if (!state) return;
+      const seat = state.seats.find((s) => s?.playerId === userId);
+      if (!seat) return; // must be seated to chat
+
+      const raw = String(payload?.message ?? '').trim();
+      if (!raw) return;
+      const message = raw.replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 200);
+      io.to(`table:${tableId}`).emit('table:chat_message', {
+        playerId: userId,
+        displayName: seat.displayName,
+        message,
+        timestamp: Date.now(),
+      });
+    });
+
     // ── Leave / disconnect ────────────────────────────────────────────────────
 
     socket.on('table:leave', () => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
+
+      tableService.cancelLeave(tableId, userId);
 
       try {
         const state = tableService.getTableState(tableId);
@@ -306,6 +363,59 @@ export function registerTableHandlers(io: Server): void {
         if (updated) io.to('lobby').emit('lobby:table_updated', tableStateFor(updated, ''));
       } catch (err) {
         console.error('[Table] leave error:', err);
+      }
+    });
+
+    socket.on('table:rejoin', (payload: { tableId: string }) => {
+      const tableId = payload?.tableId;
+      if (!tableId) return;
+      const state = tableService.getTableState(tableId);
+      if (!state) return;
+      const seated = state.seats.some((s) => s?.playerId === userId);
+      if (!seated) return;
+
+      tableService.cancelLeave(tableId, userId);
+      socket.join(`table:${tableId}`);
+      socket.data.currentTableId = tableId;
+      socket.emit('table:state', { ...tableStateFor(state, userId), isYouHost: userId === state.hostPlayerId });
+
+      // Resync active hand state
+      const handState = gameService.getReconnectHandState(tableId);
+      if (handState) {
+        const { snapshot, actionRequired } = handState;
+        // Re-send hand:started so the client knows the hand context
+        socket.emit('hand:started', {
+          handId: snapshot.handId,
+          variant: snapshot.variant,
+          dealerButtonSeatIndex: snapshot.dealerButtonSeatIndex,
+          smallBlindSeatIndex: snapshot.smallBlindSeatIndex,
+          bigBlindSeatIndex: snapshot.bigBlindSeatIndex,
+          pot: snapshot.pot,
+        });
+        // Re-send community cards if any have been dealt
+        if (snapshot.communityCards.length > 0) {
+          socket.emit('hand:community_dealt', {
+            cards: snapshot.communityCards,
+            phase: snapshot.phase,
+          });
+        }
+        // Re-send this player's hole cards (private)
+        const mySeat = snapshot.seats.find((s) => s?.playerId === userId);
+        if (mySeat?.holeCards?.length) {
+          socket.emit('hand:cards_dealt', { seatIndex: mySeat.seatIndex, holeCards: mySeat.holeCards });
+        }
+        // Re-send action_required if it's currently someone's turn
+        if (actionRequired) {
+          socket.emit('hand:action_required', actionRequired);
+        }
+        // Re-send each player's current street bet so chips display correctly
+        const seatBets: Record<number, number> = {};
+        for (const seat of snapshot.seats) {
+          if (seat && seat.currentStreetBet > 0) seatBets[seat.seatIndex] = seat.currentStreetBet;
+        }
+        if (Object.keys(seatBets).length > 0) {
+          socket.emit('hand:seat_bets', { seatBets });
+        }
       }
     });
 

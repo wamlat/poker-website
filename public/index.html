@@ -38,6 +38,13 @@
     .mono { font-family: 'JetBrains Mono', 'Courier New', monospace; }
     .hidden { display: none !important; }
 
+    #conn-banner {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+      background: #b8860b; color: #fff;
+      text-align: center; padding: 6px 12px; font-size: 13px;
+      letter-spacing: .5px;
+    }
+
     .screen { position: fixed; inset: 0; display: none; flex-direction: column; }
     .screen.active { display: flex; }
 
@@ -413,8 +420,10 @@
       font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
       padding: 2px 6px; border-radius: 2px; background: rgba(0,0,0,0.4);
     }
-    .sbadge-folded { color: #c04040; }
-    .sbadge-allin  { color: #4aaf72; }
+    .sbadge-folded  { color: #c04040; }
+    .sbadge-allin   { color: #4aaf72; }
+    .sbadge-sitout  { color: #888; }
+    .sit-out-btn    { font-size: 11px; padding: 4px 10px; opacity: .7; }
 
     .pos-badge {
       position: absolute; bottom: -3px; right: -3px;
@@ -423,9 +432,10 @@
       display: flex; align-items: center; justify-content: center;
       border: 1.5px solid var(--bg);
     }
-    .pb-d  { background: #c8a84b; color: #0a0806; }
-    .pb-sb { background: #4a8faf; color: #fff; }
-    .pb-bb { background: #c04040; color: #fff; }
+    .pb-d   { background: #c8a84b; color: #0a0806; }
+    .pb-sb  { background: #4a8faf; color: #fff; }
+    .pb-bb  { background: #c04040; color: #fff; }
+    .pb-str { background: #7a4aaf; color: #fff; }
 
     .seat-empty-lbl { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; color: rgba(255,255,255,0.14); }
 
@@ -496,6 +506,30 @@
     .log-line .lf  { color: #c04040; }
     .log-line .lr  { color: var(--gold); }
     .log-line .ls  { color: var(--green-acc); font-style: italic; }
+
+    #chat-panel {
+      position: absolute; bottom: 70px; right: 284px;
+      width: 230px; background: rgba(7,10,13,0.82);
+      border: 1px solid var(--border); border-radius: 4px;
+      backdrop-filter: blur(8px); z-index: 10;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    #chat-log {
+      flex: 1; max-height: 160px; overflow-y: auto;
+      padding: 8px; display: flex; flex-direction: column; gap: 4px;
+    }
+    .chat-msg { font-size: 12px; color: var(--text-dim); line-height: 1.4; word-break: break-word; }
+    .chat-msg .chat-name { color: var(--gold); font-size: 11px; }
+    .chat-input-row { display: flex; border-top: 1px solid var(--border); }
+    #chat-input {
+      flex: 1; background: transparent; border: none; outline: none;
+      color: var(--text); font-size: 12px; padding: 6px 8px;
+    }
+    .chat-send-btn {
+      background: none; border: none; border-left: 1px solid var(--border);
+      color: var(--gold); cursor: pointer; padding: 0 10px; font-size: 12px;
+    }
+    .chat-send-btn:hover { color: var(--text); }
 
     /* ─── WINNER BANNER ──────────────────────────────────────── */
     .winner-banner {
@@ -683,6 +717,11 @@
 </head>
 <body>
 
+<!-- Connection banner (shown when socket is disconnected) -->
+<div id="conn-banner" class="hidden">
+  <span id="conn-banner-text">Reconnecting…</span>
+</div>
+
 <!-- ══════════════════════════════════════════════════
      LOGIN
 ══════════════════════════════════════════════════ -->
@@ -798,6 +837,7 @@
         <span class="options-badge hidden" id="options-badge">0</span>
       </div>
       <button class="btn btn-ghost" id="btn-copy-link" onclick="copyTableLink()" title="Copy invite link">⎘ Link</button>
+      <button class="btn btn-ghost" id="btn-chat" onclick="toggleChat()" title="Toggle chat">💬 Chat</button>
       <button class="btn btn-ghost" id="btn-sound" onclick="toggleSound()" title="Toggle sounds">♪ Off</button>
       <button class="btn btn-danger" onclick="leaveTable()">Leave</button>
     </div>
@@ -819,6 +859,13 @@
       <div id="seats"></div>
     </div>
     <div class="game-log" id="game-log"></div>
+    <div id="chat-panel" class="hidden">
+      <div id="chat-log"></div>
+      <div class="chat-input-row">
+        <input id="chat-input" type="text" placeholder="Say something…" maxlength="200" onkeydown="chatKey(event)">
+        <button class="chat-send-btn" onclick="sendChat()">Send</button>
+      </div>
+    </div>
   </div>
 
   <div class="action-bar" id="action-bar">
@@ -840,6 +887,7 @@
       </div>
     </div>
     <div class="action-spacer"></div>
+    <button id="btn-sit-out" class="btn btn-ghost sit-out-btn hidden" onclick="toggleSitOut()">Sit Out</button>
   </div>
 </div>
 
@@ -886,6 +934,13 @@
         <div><div class="opts-label">Rabbit hunting</div><div class="opts-sub">Show future cards after fold-win</div></div>
         <label class="toggle opts-control">
           <input type="checkbox" id="opt-rabbit" onchange="pushSetting('rabbitHunting', this.checked)">
+          <div class="toggle-track"></div>
+        </label>
+      </div>
+      <div class="opts-row">
+        <div><div class="opts-label">Straddle</div><div class="opts-sub">UTG posts 2× BB, acts last preflop</div></div>
+        <label class="toggle opts-control">
+          <input type="checkbox" id="opt-straddle" onchange="pushSetting('straddleEnabled', this.checked)">
           <div class="toggle-track"></div>
         </label>
       </div>
@@ -1105,6 +1160,7 @@ const S = {
   dealerSeat: -1,
   sbSeat: -1,
   bbSeat: -1,
+  straddleSeat: -1,
   lastCompleteHandId: null,
   showdownCards: {},    // seatIndex → Card[] — persists until next hand
 
@@ -1136,6 +1192,29 @@ function toggleSound() {
   soundEnabled = !soundEnabled;
   localStorage.setItem('felt_sound', soundEnabled);
   $('btn-sound').textContent = soundEnabled ? '♪ On' : '♪ Off';
+}
+
+function toggleChat() {
+  const panel = $('chat-panel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) {
+    $('chat-input').focus();
+    $('btn-chat').style.color = 'var(--gold)';
+  } else {
+    $('btn-chat').style.color = '';
+  }
+}
+
+function sendChat() {
+  const input = $('chat-input');
+  const msg = input.value.trim();
+  if (!msg || !S.socket || !S.tableId) return;
+  S.socket.emit('table:chat', { message: msg });
+  input.value = '';
+}
+
+function chatKey(e) {
+  if (e.key === 'Enter') sendChat();
 }
 
 function soundCard() {
@@ -1253,9 +1332,10 @@ function drainQueue() {
   S.lastEventWasCommunity = (delay === 'community' || delay === 'b2card');
 
   if (ms > 0) {
-    setTimeout(() => { fn(); drainQueue(); }, ms);
+    setTimeout(() => { try { fn(); } catch(e) { console.error('[queue]', e); } drainQueue(); }, ms);
   } else {
-    fn(); drainQueue();
+    try { fn(); } catch(e) { console.error('[queue]', e); }
+    drainQueue();
   }
 }
 
@@ -1286,6 +1366,12 @@ function connectSocket() {
   S.socket = io({ auth: { username: S.username, playerId: S.playerId } });
 
   S.socket.on('connect', () => {
+    $('conn-banner').classList.add('hidden');
+    // Reconnect: if we were at a table, rejoin it to resync state
+    if (S.tableId) {
+      S.socket.emit('table:rejoin', { tableId: S.tableId });
+      return; // server will send table:state + hand state; skip lobby flow
+    }
     $('lobby-username').textContent = S.username;
     // If a table ID was in the URL, wait for table list then open the join flow
     if (S.pendingTableIdFromUrl) {
@@ -1294,6 +1380,12 @@ function connectSocket() {
     }
     showScreen('screen-lobby');
     S.socket.emit('lobby:list_tables');
+  });
+
+  S.socket.on('disconnect', () => {
+    $('conn-banner').classList.remove('hidden');
+    $('conn-banner-text').textContent = 'Reconnecting…';
+    clearTimer(); clearSeatTimer();
   });
 
   S.socket.on('connect_error', err => alert('Connection error: ' + err.message));
@@ -1388,10 +1480,36 @@ function connectSocket() {
     }
   });
 
+  S.socket.on('table:player_updated', d => {
+    if (S.seats && S.seats[d.seatIndex]) {
+      S.seats[d.seatIndex].status = d.status;
+      if (d.seatIndex === S.mySeatIndex) {
+        // Update sit-out button label
+        const btn = $('btn-sit-out');
+        if (btn) btn.textContent = d.status === 'sitting-out' ? "I'm Back" : 'Sit Out';
+      }
+      renderSeats();
+    }
+  });
+
   S.socket.on('table:settings_updated', settings => {
     S.settings = settings;
     if ($('options-modal') && !$('options-modal').classList.contains('hidden')) {
       populateOptions();
+    }
+  });
+
+  S.socket.on('table:chat_message', d => {
+    const log = $('chat-log');
+    if (!log) return;
+    const el = document.createElement('div');
+    el.className = 'chat-msg';
+    el.innerHTML = `<span class="chat-name">${d.displayName}</span> ${d.message}`;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    // Show chat panel briefly if hidden (flash indicator)
+    if ($('chat-panel').classList.contains('hidden')) {
+      $('btn-chat').style.color = '#e0a020';
     }
   });
 
@@ -1423,9 +1541,10 @@ function connectSocket() {
     S.myStreetBet = 0;
     S.validActions = [];
     S.currentActorSeat = -1;
-    S.dealerSeat = p.dealerButtonSeatIndex;
-    S.sbSeat     = p.smallBlindSeatIndex;
-    S.bbSeat     = p.bigBlindSeatIndex;
+    S.dealerSeat   = p.dealerButtonSeatIndex;
+    S.sbSeat       = p.smallBlindSeatIndex;
+    S.bbSeat       = p.bigBlindSeatIndex;
+    S.straddleSeat = p.straddleSeatIndex ?? -1;
     S.lastEventWasCommunity = false;
     S.showdownCards = {};
     // Flush any queued events from previous hand
@@ -1618,6 +1737,15 @@ function connectSocket() {
     log(`<span class="ls">Rabbit: ${p.cards.map(c => c.rank+c.suit).join(' ')}</span>`);
   });
 
+  // Sent by server on reconnect to restore current-street bet tokens
+  S.socket.on('hand:seat_bets', p => {
+    if (p.seatBets) {
+      S.seatBets = {};
+      Object.entries(p.seatBets).forEach(([idx, amt]) => { S.seatBets[parseInt(idx)] = amt; });
+      renderSeats();
+    }
+  });
+
   S.socket.on('hand:complete', p => {
     enqueue(() => {
       S.lastCompleteHandId = S.handId;
@@ -1744,6 +1872,9 @@ function enterTable(state) {
   S.queueProcessing = false;
   S.lastEventWasCommunity = false;
   S.pendingRitHandId = null;
+  $('chat-log').innerHTML = '';
+  $('chat-panel').classList.add('hidden');
+  $('btn-chat').style.color = '';
   if (S.ritCountdownIv) { clearInterval(S.ritCountdownIv); S.ritCountdownIv = null; }
   if (S.winnerTmo) { clearTimeout(S.winnerTmo); S.winnerTmo = null; }
   clearTimer(); clearSeatTimer();
@@ -1783,6 +1914,15 @@ function enterTable(state) {
   $('tbl-blinds').textContent  = `${fmt(state.config.smallBlind)} / ${fmt(state.config.bigBlind)}`;
   // Update sound button to match persisted state
   $('btn-sound').textContent = soundEnabled ? '♪ On' : '♪ Off';
+  // Show sit-out button only when player is seated
+  const sitOutBtn = $('btn-sit-out');
+  if (S.mySeatIndex >= 0) {
+    sitOutBtn.classList.remove('hidden');
+    const mySeat = state.seats[S.mySeatIndex];
+    sitOutBtn.textContent = mySeat?.status === 'sitting-out' ? "I'm Back" : 'Sit Out';
+  } else {
+    sitOutBtn.classList.add('hidden');
+  }
   showScreen('screen-table');
   renderSeats();
   setPot(0);
@@ -1795,10 +1935,22 @@ function leaveTable() {
   S.tableId = null; S.mySeatIndex = -1; S.seats = []; S.handId = null;
   S.ledger = {};
   clearTimer(); clearSeatTimer(); $('game-log').innerHTML = '';
+  $('chat-log').innerHTML = '';
+  $('chat-panel').classList.add('hidden');
+  $('btn-chat').style.color = '';
+  $('btn-sit-out').classList.add('hidden');
   showScreen('screen-lobby');
 }
 
 function startHand() { S.socket.emit('table:start_hand'); }
+
+function toggleSitOut() {
+  if (!S.socket || S.mySeatIndex < 0) return;
+  const seat = S.seats[S.mySeatIndex];
+  if (!seat) return;
+  const isSittingOut = seat.status === 'sitting-out';
+  S.socket.emit(isSittingOut ? 'table:come_back' : 'table:sit_out');
+}
 
 // ─── RENDER SEATS ───────────────────────────────────────────
 function renderSeats() {
@@ -1825,9 +1977,10 @@ function renderSeats() {
     // Position badges
     let pbadges = '';
     if (S.handId || S.dealerSeat >= 0) {
-      if (i === S.dealerSeat) pbadges += `<span class="pos-badge pb-d">D</span>`;
-      if (i === S.sbSeat)     pbadges += `<span class="pos-badge pb-sb">SB</span>`;
-      if (i === S.bbSeat)     pbadges += `<span class="pos-badge pb-bb">BB</span>`;
+      if (i === S.dealerSeat)   pbadges += `<span class="pos-badge pb-d">D</span>`;
+      if (i === S.sbSeat)       pbadges += `<span class="pos-badge pb-sb">SB</span>`;
+      if (i === S.bbSeat)       pbadges += `<span class="pos-badge pb-bb">BB</span>`;
+      if (i === S.straddleSeat) pbadges += `<span class="pos-badge pb-str">STR</span>`;
     }
 
     // Host badge
@@ -1853,9 +2006,11 @@ function renderSeats() {
     }
 
     // Status badge
+    const isSittingOut = seat?.status === 'sitting-out';
     let sbadge = '';
-    if (isFolded) sbadge = `<div class="seat-sbadge sbadge-folded">Folded</div>`;
-    if (isAllIn)  sbadge = `<div class="seat-sbadge sbadge-allin">All-In</div>`;
+    if (isFolded)     sbadge = `<div class="seat-sbadge sbadge-folded">Folded</div>`;
+    if (isAllIn)      sbadge = `<div class="seat-sbadge sbadge-allin">All-In</div>`;
+    if (isSittingOut) sbadge = `<div class="seat-sbadge sbadge-sitout">Sitting Out</div>`;
 
     // Timer element (content set by startSeatTimer)
     const timerEl = isActing && !isMe ? `<div class="seat-timer" id="seat-timer-${i}">—</div>` : '';
@@ -2068,11 +2223,12 @@ function populateOptions() {
   if (!s) return;
   const locked = !isHost();
 
-  $('opt-autodeal').checked = s.autoDeal;
-  $('opt-autodelay').value  = s.autoDealDelaySeconds;
-  $('opt-rit').checked      = s.runItTwice;
-  $('opt-rabbit').checked   = s.rabbitHunting;
-  $('opt-timeout').value    = s.actionTimeoutSeconds;
+  $('opt-autodeal').checked  = s.autoDeal;
+  $('opt-autodelay').value   = s.autoDealDelaySeconds;
+  $('opt-rit').checked       = s.runItTwice;
+  $('opt-rabbit').checked    = s.rabbitHunting;
+  $('opt-straddle').checked  = !!s.straddleEnabled;
+  $('opt-timeout').value     = s.actionTimeoutSeconds;
   $('opt-variant').value    = S.tableConfig?.variant || 'NLHE';
 
   document.querySelectorAll('input[name="sd-reveal"]').forEach(r => {

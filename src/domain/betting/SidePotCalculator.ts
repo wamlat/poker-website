@@ -29,12 +29,6 @@ export function calculateSidePots(contributions: PlayerContribution[]): SidePot[
 
     const levelSize = currentLevel - previousLevel;
     const eligiblePlayers = sorted.slice(i).map((p) => p.playerId);
-    // Players who contributed less than currentLevel contributed up to their cap
-    // Players at exactly this level are eligible for this pot
-    // Players above this level are also eligible
-    const potAmount = levelSize * (sorted.length - i + (sorted.filter((p, idx) => idx < i && p.totalContribution >= currentLevel).length));
-
-    // Simpler correct approach: count all players who contributed >= currentLevel
     const contributors = contributions.filter((p) => p.totalContribution >= currentLevel);
     sidePots.push({
       amount: levelSize * contributors.length,

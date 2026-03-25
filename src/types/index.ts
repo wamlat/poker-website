@@ -53,6 +53,7 @@ export interface TableSettings {
   rabbitHunting: boolean;
   showdownReveal: ShowdownRevealRule;
   actionTimeoutSeconds: number;
+  straddleEnabled: boolean;
 }
 
 // ─── Hand State Machine ───────────────────────────────────────────────────────
@@ -101,6 +102,7 @@ export interface HandSnapshot {
   actionDeadlineMs: number | null;
   bigBlind: number;
   smallBlind: number;
+  straddleSeatIndex: number | null;
 }
 
 // ─── Player Actions ───────────────────────────────────────────────────────────
@@ -173,6 +175,7 @@ export const DEFAULT_TABLE_SETTINGS: TableSettings = {
   rabbitHunting: false,
   showdownReveal: 'standard',
   actionTimeoutSeconds: 20,
+  straddleEnabled: false,
 };
 
 export interface PendingJoinRequest {

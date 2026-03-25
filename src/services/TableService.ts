@@ -1,4 +1,4 @@
-const randomUUID = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+import { randomUUID } from 'crypto';
 import { tableStateRepo } from '../repositories/TableStateRepository';
 import { config } from '../config';
 import { getVariant } from '../domain/variants';
@@ -129,6 +129,7 @@ export class TableService {
 
     const newStack = seat.stack + amount;
     if (newStack < 0) throw new Error('Cannot reduce stack below zero');
+    if (newStack > state.config.maxBuyIn) throw new Error('Cannot exceed max buy-in');
     seat.stack = newStack;
 
     tableStateRepo.saveTableState(tableId, state);
@@ -310,6 +311,29 @@ export class TableService {
       throw new Error(`Rebuy amount must be between ${state.config.minBuyIn} and ${state.config.maxBuyIn}`);
     }
     seat.stack = amount;
+    tableStateRepo.saveTableState(tableId, state);
+    return state;
+  }
+
+  // ── Sit out / come back ───────────────────────────────────────────────────
+
+  sitOut(tableId: string, playerId: string): TableState {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    if (state.status === 'running') throw new Error('Cannot sit out during a hand');
+    const seat = state.seats.find((s) => s?.playerId === playerId);
+    if (!seat) throw new Error('Not seated at this table');
+    seat.status = 'sitting-out';
+    tableStateRepo.saveTableState(tableId, state);
+    return state;
+  }
+
+  comeBack(tableId: string, playerId: string): TableState {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    const seat = state.seats.find((s) => s?.playerId === playerId);
+    if (!seat) throw new Error('Not seated at this table');
+    seat.status = 'active';
     tableStateRepo.saveTableState(tableId, state);
     return state;
   }
