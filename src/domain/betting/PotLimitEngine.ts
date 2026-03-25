@@ -24,8 +24,6 @@ export class PotLimitEngine implements BettingEngine {
   }
 
   isValidBetAmount(amount: number, state: BettingState): boolean {
-    const allIn = state.playerStreetBet + state.playerStack;
-    if (amount === allIn) return true; // all-in always valid
     const bounds = this.getRaiseBounds(state);
     return amount >= bounds.min && amount <= bounds.max;
   }

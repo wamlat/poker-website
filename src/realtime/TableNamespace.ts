@@ -125,7 +125,13 @@ export function registerTableHandlers(io: Server): void {
 
       try {
         const state = tableService.changeVariant(tableId, userId, payload.variant);
-        io.to(`table:${tableId}`).emit('table:state', state);
+        // Send personalised table:state so each socket gets the correct isYouHost flag
+        for (const s of Array.from(io.sockets.sockets.values())) {
+          const sock = s as AuthenticatedSocket;
+          if (sock.data.currentTableId === tableId) {
+            sock.emit('table:state', { ...state, isYouHost: sock.data.userId === state.hostPlayerId });
+          }
+        }
         io.to('lobby').emit('lobby:table_updated', state);
       } catch (err: unknown) {
         socket.emit('hand:error', {

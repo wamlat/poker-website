@@ -264,7 +264,7 @@
       overflow: hidden;
     }
 
-    .poker-table { position: relative; width: 700px; height: 370px; }
+    .poker-table { position: relative; width: 760px; height: 430px; }
 
     .table-felt {
       position: absolute; inset: 0; border-radius: 50%;
@@ -499,7 +499,7 @@
 
     /* ─── WINNER BANNER ──────────────────────────────────────── */
     .winner-banner {
-      position: absolute; bottom: 8%; left: 50%; transform: translateX(-50%);
+      position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
       background: rgba(7,10,13,0.94); border: 1px solid var(--gold);
       padding: 14px 36px; border-radius: 4px;
       text-align: center; z-index: 20; white-space: nowrap;
@@ -749,6 +749,10 @@
   </div>
 
   <div class="table-arena">
+    <div class="winner-banner hidden" id="winner-banner">
+      <h3>Winner</h3>
+      <p id="winner-txt"></p>
+    </div>
     <div class="poker-table" id="poker-table">
       <div class="table-felt"></div>
       <div class="table-center">
@@ -758,10 +762,6 @@
         <div class="phase-label" id="phase-lbl"></div>
       </div>
       <div id="seats"></div>
-      <div class="winner-banner hidden" id="winner-banner">
-        <h3>Winner</h3>
-        <p id="winner-txt"></p>
-      </div>
     </div>
     <div class="game-log" id="game-log"></div>
   </div>
@@ -1100,8 +1100,9 @@ function drainQueue() {
   const { fn, delay } = S.eventQueue.shift();
   const ms = delay === 'community' ? (S.lastEventWasCommunity ? 500 : 0)
            : delay === 'board2'   ? 2000
+           : delay === 'b2card'   ? 500
            : 0;
-  S.lastEventWasCommunity = (delay === 'community');
+  S.lastEventWasCommunity = (delay === 'community' || delay === 'b2card');
 
   if (ms > 0) {
     setTimeout(() => { fn(); drainQueue(); }, ms);
@@ -1261,11 +1262,11 @@ function connectSocket() {
   });
 
   S.socket.on('hand:run_two_board', p => {
+    // Step 1: 2000ms pause then show Board 1 label + Board 2 flop (cards 0-2)
     enqueue(() => {
       log(`<span class="ls">Run it twice — Board 2</span>`);
       const existing = $('run-two-board');
       if (existing) existing.remove();
-      // Wrap both boards with labels so players can tell them apart
       const b1 = $('community');
       if (b1 && !b1.previousElementSibling?.classList.contains('board-label')) {
         const lbl1 = document.createElement('div');
@@ -1279,12 +1280,24 @@ function connectSocket() {
       const runTwo = document.createElement('div');
       runTwo.id = 'run-two-board';
       runTwo.className = 'community-cards';
-      runTwo.innerHTML = p.board.map(c => cardHTML(c.rank, c.suit, true, false, true)).join('');
+      runTwo.innerHTML = p.board.slice(0, 3).map(c => cardHTML(c.rank, c.suit, true, false, true)).join('');
       const center = document.querySelector('.table-center');
       center.appendChild(lbl2);
       center.appendChild(runTwo);
       soundCard();
     }, 'board2');
+    // Step 2: +500ms — turn
+    enqueue(() => {
+      const rt = $('run-two-board');
+      if (rt) rt.insertAdjacentHTML('beforeend', cardHTML(p.board[3].rank, p.board[3].suit, true, false, true));
+      soundCard();
+    }, 'b2card');
+    // Step 3: +500ms — river
+    enqueue(() => {
+      const rt = $('run-two-board');
+      if (rt) rt.insertAdjacentHTML('beforeend', cardHTML(p.board[4].rank, p.board[4].suit, true, false, true));
+      soundCard();
+    }, 'b2card');
   });
 
   S.socket.on('hand:action_required', p => {

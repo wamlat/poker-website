@@ -64,18 +64,29 @@ export class ActionValidator {
       actions.push({ type: 'call', amount: callAmount });
     }
 
-    // Explicit all-in shove: available in any betting structure when it would be
-    // aggressive (total commitment exceeds current bet). In pot-limit this covers the
-    // short-shove case where stack < minRaise so the raise action isn't available.
-    if (seat.currentStreetBet + seat.stack > snapshot.currentBet) {
+    const allInTotal = seat.currentStreetBet + seat.stack;
+    const isPotLimit = this.bettingEngine.structureName === 'Pot Limit';
+    // Pot-limit max raise (uncapped — used to determine if all-in is legal)
+    const callAmt = Math.max(0, snapshot.currentBet - seat.currentStreetBet);
+    const potLimitMax = snapshot.currentBet + snapshot.pot + callAmt;
+    const raiseIncrement = Math.max(snapshot.lastRaiseSize, snapshot.bigBlind);
+    const uncappedMinRaise = snapshot.currentBet + raiseIncrement;
+
+    // Explicit all-in shove:
+    // - No-limit: always offered when aggressive (total > currentBet)
+    // - Pot-limit: only offered when all-in doesn't exceed the pot-limit max raise;
+    //   going all-in for over-pot is illegal in pot-limit poker.
+    if (allInTotal > snapshot.currentBet && (!isPotLimit || allInTotal <= potLimitMax)) {
       actions.push({ type: 'all-in', amount: seat.stack });
     }
 
     // Bet (no current bet) or Raise (responding to a bet).
-    // Only show when the player can actually raise *above* the current bet.
+    // In pot-limit, only show when the player can make a full legal raise (stack covers
+    // the min raise increment). Short-stack all-ins in pot-limit use the all-in action.
     const hasBet = snapshot.currentBet > 0;
     const bounds = this.bettingEngine.getRaiseBounds(bettingState);
-    if (bounds.min > 0 && bounds.min <= bounds.max && bounds.max > snapshot.currentBet) {
+    const canFullRaise = !isPotLimit || allInTotal >= uncappedMinRaise;
+    if (canFullRaise && bounds.min > 0 && bounds.min <= bounds.max && bounds.max > snapshot.currentBet) {
       if (hasBet) {
         actions.push({ type: 'raise', minAmount: bounds.min, maxAmount: bounds.max });
       } else {
