@@ -647,6 +647,8 @@ export class HandStateMachine {
           seatIndex: seat.seatIndex,
           playerId: seat.playerId,
           validActions,
+          pot: this.snapshot.pot,
+          playerStreetBet: seat.currentStreetBet,
           deadlineMs: this.snapshot.actionDeadlineMs,
         },
       },

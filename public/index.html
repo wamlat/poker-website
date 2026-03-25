@@ -1101,6 +1101,7 @@ const S = {
   currentActorSeat: -1,
   myCards: [],
   seatBets: {},
+  myStreetBet: 0,
   dealerSeat: -1,
   sbSeat: -1,
   bbSeat: -1,
@@ -1419,6 +1420,7 @@ function connectSocket() {
     S.pot = p.pot;
     S.myCards = [];
     S.seatBets = {};
+    S.myStreetBet = 0;
     S.validActions = [];
     S.currentActorSeat = -1;
     S.dealerSeat = p.dealerButtonSeatIndex;
@@ -1464,6 +1466,7 @@ function connectSocket() {
       p.cards.forEach(c => S.communityCards.push(c));
       S.phase = p.phase;
       S.seatBets = {};
+      S.myStreetBet = 0;
       renderCommunity(newCount);
       $('phase-lbl').textContent = p.phase.toUpperCase();
       renderSeats();
@@ -1517,6 +1520,10 @@ function connectSocket() {
       S.currentActorSeat = p.seatIndex;
       S.currentDeadlineMs = p.deadlineMs;
       S.lastEventWasCommunity = false;
+      if (p.pot !== undefined) { S.pot = p.pot; setPot(p.pot); }
+      if (p.seatIndex === S.mySeatIndex) {
+        S.myStreetBet = p.playerStreetBet || 0;
+      }
       renderSeats();
       if (p.seatIndex === S.mySeatIndex) {
         buildActions();
@@ -1625,6 +1632,8 @@ function connectSocket() {
       $('phase-lbl').textContent = '';
       clearTimer(); clearSeatTimer(); clearActions(true);
 
+      S.seatBets = {};
+      setPot(0);
       let myStackHitZero = false;
       p.finalSeats.forEach(fs => {
         if (fs && S.seats[fs.seatIndex]) {
@@ -2147,10 +2156,10 @@ function setPotFraction(fraction) {
   const sl = $('bet-slider');
   if (!sl) return;
   // Slider value = total street commitment (matches server's minAmount/maxAmount).
-  // currentBet = callAmt + myStreetBet (chips already in this street).
-  // Pot-fraction formula: currentBet + fraction*(pot + callAmt)
+  // playerStreetBet comes from action_required (authoritative, includes blind postings).
+  // Pot-fraction formula: (callAmt + myStreetBet) + fraction*(pot + callAmt)
   const callAmt = S.validActions.find(a => a.type === 'call')?.amount || 0;
-  const myStreetBet = S.seatBets[S.mySeatIndex] || 0;
+  const myStreetBet = S.myStreetBet || 0;
   const currentBet = callAmt + myStreetBet;
   const raw = Math.round(currentBet + (S.pot + callAmt) * fraction);
   const clamped = Math.max(parseInt(sl.min), Math.min(parseInt(sl.max), raw));
