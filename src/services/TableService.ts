@@ -2,7 +2,7 @@ const randomUUID = () => Math.random().toString(36).slice(2) + Date.now().toStri
 import { tableStateRepo } from '../repositories/TableStateRepository';
 import { config } from '../config';
 import { getVariant } from '../domain/variants';
-import { DEFAULT_TABLE_SETTINGS, Seat, TableConfig, TableSettings, TableState, VariantName } from '../types';
+import { DEFAULT_TABLE_SETTINGS, PendingJoinRequest, Seat, TableConfig, TableSettings, TableState, VariantName } from '../types';
 
 export interface CreateTableOptions {
   name: string;
@@ -46,6 +46,7 @@ export class TableService {
         ...DEFAULT_TABLE_SETTINGS,
         actionTimeoutSeconds: options.actionTimeoutSeconds ?? config.actionTimeoutSeconds,
       },
+      pendingJoinRequests: [],
     };
 
     tableStateRepo.saveTableState(tableId, state);
@@ -194,6 +195,121 @@ export class TableService {
     if (!state.seats.some((s) => s?.playerId === newHostPlayerId)) throw new Error('New host must be seated at the table');
 
     state.hostPlayerId = newHostPlayerId;
+    tableStateRepo.saveTableState(tableId, state);
+    return state;
+  }
+
+  // ── Join request flow ────────────────────────────────────────────────────
+
+  addJoinRequest(
+    tableId: string,
+    playerId: string,
+    displayName: string,
+    requestedBuyIn: number,
+    preferredSeatIndex: number | null,
+  ): PendingJoinRequest {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    if (requestedBuyIn < state.config.minBuyIn || requestedBuyIn > state.config.maxBuyIn) {
+      throw new Error(`Buy-in must be between ${state.config.minBuyIn} and ${state.config.maxBuyIn}`);
+    }
+    if (state.seats.some((s) => s?.playerId === playerId)) {
+      throw new Error('Already seated at this table');
+    }
+    // Replace any existing pending request from the same player
+    state.pendingJoinRequests = state.pendingJoinRequests.filter((r) => r.playerId !== playerId);
+
+    const request: PendingJoinRequest = {
+      requestId: randomUUID(),
+      playerId,
+      displayName,
+      requestedBuyIn,
+      preferredSeatIndex,
+      requestedAt: Date.now(),
+    };
+    state.pendingJoinRequests.push(request);
+    tableStateRepo.saveTableState(tableId, state);
+    return request;
+  }
+
+  cancelJoinRequest(tableId: string, playerId: string): void {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) return;
+    state.pendingJoinRequests = state.pendingJoinRequests.filter((r) => r.playerId !== playerId);
+    tableStateRepo.saveTableState(tableId, state);
+  }
+
+  approveJoinRequest(
+    tableId: string,
+    hostPlayerId: string,
+    requestId: string,
+    finalBuyIn: number,
+  ): { state: TableState; seatIndex: number; approvedRequest: PendingJoinRequest } {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    if (state.hostPlayerId !== hostPlayerId) throw new Error('Only the host can approve requests');
+
+    const req = state.pendingJoinRequests.find((r) => r.requestId === requestId);
+    if (!req) throw new Error('Request not found');
+
+    state.pendingJoinRequests = state.pendingJoinRequests.filter((r) => r.requestId !== requestId);
+    tableStateRepo.saveTableState(tableId, state);
+
+    const result = this.joinTable(tableId, req.playerId, req.displayName, finalBuyIn, req.preferredSeatIndex ?? undefined);
+    return { ...result, approvedRequest: req };
+  }
+
+  rejectJoinRequest(
+    tableId: string,
+    hostPlayerId: string,
+    requestId: string,
+  ): PendingJoinRequest {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    if (state.hostPlayerId !== hostPlayerId) throw new Error('Only the host can reject requests');
+
+    const req = state.pendingJoinRequests.find((r) => r.requestId === requestId);
+    if (!req) throw new Error('Request not found');
+
+    state.pendingJoinRequests = state.pendingJoinRequests.filter((r) => r.requestId !== requestId);
+    tableStateRepo.saveTableState(tableId, state);
+    return req;
+  }
+
+  // ── Disconnect grace period ───────────────────────────────────────────────
+
+  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  scheduleLeave(tableId: string, playerId: string, onLeave: () => void, delayMs = 15_000): void {
+    this.cancelLeave(tableId, playerId);
+    this.disconnectTimers.set(
+      `${tableId}:${playerId}`,
+      setTimeout(onLeave, delayMs),
+    );
+  }
+
+  cancelLeave(tableId: string, playerId: string): void {
+    const key = `${tableId}:${playerId}`;
+    const t = this.disconnectTimers.get(key);
+    if (t !== undefined) {
+      clearTimeout(t);
+      this.disconnectTimers.delete(key);
+    }
+  }
+
+  // ── Self rebuy ────────────────────────────────────────────────────────────
+
+  selfRebuy(tableId: string, playerId: string, amount: number): TableState {
+    const state = tableStateRepo.getTableState(tableId);
+    if (!state) throw new Error('Table not found');
+    if (state.status === 'running') throw new Error('Cannot rebuy during a hand');
+    const seat = state.seats.find((s) => s?.playerId === playerId);
+    if (!seat) throw new Error('Not seated at this table');
+    if (seat.stack > 0) throw new Error('Can only rebuy when stack is 0');
+    if (amount < state.config.minBuyIn || amount > state.config.maxBuyIn) {
+      throw new Error(`Rebuy amount must be between ${state.config.minBuyIn} and ${state.config.maxBuyIn}`);
+    }
+    seat.stack = amount;
     tableStateRepo.saveTableState(tableId, state);
     return state;
   }

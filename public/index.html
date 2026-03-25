@@ -632,6 +632,53 @@
       0%, 100% { box-shadow: 0 0 0 4px rgba(200,168,75,0.18); }
       50%       { box-shadow: 0 0 0 7px rgba(200,168,75,0.08); }
     }
+
+    /* ─── COPY LINK BUTTON (lobby card) ─────────────────── */
+    .tc-copy-link {
+      position: absolute; top: 10px; right: 8px;
+      font-size: 11px; padding: 3px 7px; border-radius: 2px;
+      background: transparent; border: 1px solid rgba(255,255,255,0.1);
+      color: var(--text-dim); cursor: pointer; letter-spacing: 0.1em;
+      transition: color 0.15s, border-color 0.15s; font-family: inherit;
+    }
+    .tc-copy-link:hover { color: var(--gold); border-color: var(--gold-dim); }
+
+    /* ─── OPTIONS BADGE ──────────────────────────────────── */
+    .options-badge-wrap { position: relative; display: inline-block; }
+    .options-badge {
+      position: absolute; top: -4px; right: -4px;
+      background: var(--gold); color: #0a0806;
+      font-size: 9px; min-width: 16px; height: 16px;
+      border-radius: 8px; display: flex; align-items: center;
+      justify-content: center; padding: 0 3px; font-weight: 700;
+      font-family: 'JetBrains Mono', monospace; pointer-events: none;
+    }
+
+    /* ─── SEAT PICKER GRID (request-join modal) ─────────── */
+    .seat-pick-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .seat-pick-btn {
+      flex: 1 1 calc(20% - 8px); min-width: 60px;
+      padding: 8px 4px; font-size: 11px; border-radius: 2px;
+      cursor: pointer; border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.03); color: var(--text-dim);
+      font-family: inherit; letter-spacing: 0.12em; transition: all 0.15s;
+    }
+    .seat-pick-btn:hover:not(:disabled) { border-color: var(--gold-dim); color: var(--gold); }
+    .seat-pick-btn.selected { background: rgba(200,168,75,0.15); border-color: var(--gold); color: var(--gold); }
+    .seat-pick-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* ─── WAITING SCREEN ─────────────────────────────────── */
+    .waiting-box {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; height: 100%; gap: 20px;
+      text-align: center;
+    }
+    .waiting-spinner {
+      width: 36px; height: 36px; border: 2px solid rgba(200,168,75,0.2);
+      border-top-color: var(--gold); border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -707,6 +754,10 @@
           <label class="form-label">Max Buy-In</label>
           <input type="number" id="ct-maxbuy" value="10000">
         </div>
+        <div class="form-field full">
+          <label class="form-label">Your Buy-In</label>
+          <input type="number" id="ct-buyin" value="5000">
+        </div>
       </div>
       <button class="btn btn-primary" onclick="createTable()" style="width:100%">Create Table</button>
     </div>
@@ -742,7 +793,11 @@
     <div class="th-right">
       <button class="btn btn-ghost" id="btn-deal" onclick="startHand()">Deal Hand</button>
       <button class="btn btn-ghost" onclick="openLedger()">Ledger</button>
-      <button class="btn btn-ghost" onclick="openOptions()">⚙ Options</button>
+      <div class="options-badge-wrap">
+        <button class="btn btn-ghost" onclick="openOptions()">⚙ Options</button>
+        <span class="options-badge hidden" id="options-badge">0</span>
+      </div>
+      <button class="btn btn-ghost" id="btn-copy-link" onclick="copyTableLink()" title="Copy invite link">⎘ Link</button>
       <button class="btn btn-ghost" id="btn-sound" onclick="toggleSound()" title="Toggle sounds">♪ Off</button>
       <button class="btn btn-danger" onclick="leaveTable()">Leave</button>
     </div>
@@ -887,6 +942,15 @@
       <div class="player-list" id="opt-player-list"></div>
     </div>
 
+    <!-- PENDING JOIN REQUESTS (host only) -->
+    <div class="opts-section" id="pending-requests-section" style="display:none">
+      <div class="opts-section-title" style="display:flex;align-items:center;gap:8px">
+        Pending Requests
+        <span id="pending-count-badge" style="background:var(--gold);color:#0a0806;font-size:9px;padding:2px 7px;border-radius:10px;font-family:'JetBrains Mono',monospace;font-weight:700">0</span>
+      </div>
+      <div id="pending-requests-list" style="display:flex;flex-direction:column;gap:10px;margin-top:8px"></div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeOptions()">Close</button>
     </div>
@@ -926,13 +990,90 @@
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════
+     WAITING ROOM (join request pending)
+══════════════════════════════════════════════════ -->
+<div id="screen-waiting" class="screen">
+  <div class="waiting-box">
+    <div class="logo" style="margin-bottom:8px">
+      <div class="logo-chip">♠</div>
+      <div class="logo-name">Felt</div>
+    </div>
+    <div id="wr-table-name" style="font-size:26px;font-weight:300;letter-spacing:0.12em;color:var(--gold)">—</div>
+    <div id="wr-table-info" style="font-size:12px;letter-spacing:0.18em;color:var(--text-dim);text-transform:uppercase">—</div>
+    <div style="margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:14px">
+      <div class="waiting-spinner"></div>
+      <div style="font-size:15px;color:var(--text-dim)">Waiting for host approval…</div>
+    </div>
+    <button class="btn btn-ghost" style="margin-top:24px" onclick="cancelJoinRequest()">Cancel</button>
+  </div>
+</div>
+
+<!-- REQUEST JOIN MODAL -->
+<div id="request-join-modal" class="modal-overlay hidden">
+  <div class="modal" style="min-width:400px">
+    <div class="modal-title" id="rj-title">Request to Join</div>
+    <div class="modal-info" id="rj-info"></div>
+
+    <div style="margin:16px 0 4px">
+      <div class="form-label" style="margin-bottom:10px">Choose a Seat <span style="color:var(--text-dim);font-size:11px">(optional)</span></div>
+      <div class="seat-pick-grid" id="rj-seat-grid"></div>
+    </div>
+
+    <div class="form-field" style="margin-top:14px">
+      <label class="form-label">Buy-In Amount</label>
+      <input type="number" id="rj-buyin">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeRequestJoin()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmRequestJoin()">Request to Join</button>
+    </div>
+  </div>
+</div>
+
+<!-- REBUY MODAL -->
+<div id="rebuy-modal" class="modal-overlay hidden">
+  <div class="modal" style="max-width:360px;text-align:center">
+    <div class="modal-title">Add More Chips?</div>
+    <div class="modal-info">Your stack is at 0. Re-buy to keep playing.</div>
+    <div class="form-field" style="margin:18px 0">
+      <label class="form-label">Re-Buy Amount</label>
+      <input type="number" id="rebuy-amount">
+    </div>
+    <div class="modal-actions" style="justify-content:center;gap:14px">
+      <button class="btn btn-ghost" onclick="$('rebuy-modal').classList.add('hidden')">Sit Out</button>
+      <button class="btn btn-primary" onclick="confirmRebuy()">Re-Buy</button>
+    </div>
+  </div>
+</div>
+
 <script>
+// ════════════════════════════════════════════════════════════
+//  PERSISTENT IDENTITY
+// ════════════════════════════════════════════════════════════
+function getOrCreatePlayerId() {
+  let id = localStorage.getItem('felt_player_id');
+  if (!id) {
+    id = typeof crypto?.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : (Math.random().toString(36).slice(2,10) + '-' + Math.random().toString(36).slice(2,10) + '-' + Date.now().toString(36));
+    localStorage.setItem('felt_player_id', id);
+  }
+  return id;
+}
+const MY_PLAYER_ID = getOrCreatePlayerId();
+
 // ════════════════════════════════════════════════════════════
 //  STATE
 // ════════════════════════════════════════════════════════════
 const S = {
+  playerId: MY_PLAYER_ID,
   socket: null,
   username: '',
+
+  // URL-based table link routing
+  pendingTableIdFromUrl: new URLSearchParams(location.search).get('table'),
+  _joinAfterList: null,
 
   // Lobby
   tables: {},
@@ -945,6 +1086,11 @@ const S = {
   hostPlayerId: null,
   isHostPlayer: false,   // set by server — avoids socket ID comparison bugs
   settings: null,
+
+  // Join request state
+  pendingJoinRequests: [],   // host's view
+  myPendingRequest: null,    // requester's view
+  _selectedSeat: null,
 
   // Hand
   handId: null,
@@ -981,12 +1127,13 @@ const S = {
 };
 
 // ─── SOUNDS ─────────────────────────────────────────────────
-let soundEnabled = false;
+let soundEnabled = localStorage.getItem('felt_sound') === 'true';
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
 function toggleSound() {
   if (audioCtx.state === 'suspended') audioCtx.resume();
   soundEnabled = !soundEnabled;
+  localStorage.setItem('felt_sound', soundEnabled);
   $('btn-sound').textContent = soundEnabled ? '♪ On' : '♪ Off';
 }
 
@@ -1114,10 +1261,17 @@ function drainQueue() {
 // ════════════════════════════════════════════════════════════
 //  LOGIN
 // ════════════════════════════════════════════════════════════
+// Pre-fill saved username
+(function() {
+  const saved = localStorage.getItem('felt_username');
+  if (saved) $('username-input').value = saved;
+})();
+
 function handleLogin() {
   const u = $('username-input').value.trim();
   if (!u) { $('username-input').focus(); return; }
   S.username = u;
+  localStorage.setItem('felt_username', u);
   connectSocket();
 }
 $('username-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(); });
@@ -1128,10 +1282,15 @@ $('username-input').addEventListener('keydown', e => { if (e.key === 'Enter') ha
 function connectSocket() {
   if (S.socket) S.socket.disconnect();
 
-  S.socket = io({ auth: { username: S.username } });
+  S.socket = io({ auth: { username: S.username, playerId: S.playerId } });
 
   S.socket.on('connect', () => {
     $('lobby-username').textContent = S.username;
+    // If a table ID was in the URL, wait for table list then open the join flow
+    if (S.pendingTableIdFromUrl) {
+      S._joinAfterList = S.pendingTableIdFromUrl;
+      S.pendingTableIdFromUrl = null;
+    }
     showScreen('screen-lobby');
     S.socket.emit('lobby:list_tables');
   });
@@ -1143,12 +1302,64 @@ function connectSocket() {
     S.tables = {};
     tables.forEach(t => S.tables[t.config.tableId] = t);
     renderGrid();
+    // Auto-open request join if we arrived via a shared link
+    if (S._joinAfterList) {
+      const tid = S._joinAfterList;
+      S._joinAfterList = null;
+      if (S.tables[tid]) {
+        openRequestJoin(tid);
+      } else {
+        alert('Table not found. The link may be invalid or the table has ended.');
+      }
+    }
   });
-  S.socket.on('lobby:table_created', t => { S.tables[t.config.tableId] = t; renderGrid(); });
   S.socket.on('lobby:table_updated', t => {
     S.tables[t.config.tableId] = t;
     renderGrid();
     if (S.tableId === t.config.tableId) { S.seats = t.seats; renderSeats(); }
+  });
+
+  // ── Join request events ─────────────────────────────────────
+  // Requester: request was received by server
+  S.socket.on('table:join_requested', ({ request, tableId }) => {
+    S.myPendingRequest = { ...request, tableId };
+    const t = S.tables[tableId];
+    $('wr-table-name').textContent = t?.config.name || '—';
+    $('wr-table-info').textContent = t
+      ? `${t.config.variant} · ${fmt(t.config.smallBlind)}/${fmt(t.config.bigBlind)}`
+      : '—';
+    showScreen('screen-waiting');
+  });
+
+  // Requester: rejected
+  S.socket.on('table:join_rejected', ({ reason }) => {
+    S.myPendingRequest = null;
+    alert('Join request declined: ' + (reason || 'Host declined your request'));
+    showScreen('screen-lobby');
+    S.socket.emit('lobby:list_tables');
+  });
+
+  // Host: new incoming request
+  S.socket.on('table:join_request_received', ({ request }) => {
+    S.pendingJoinRequests.push(request);
+    updatePendingBadge();
+    if (!$('options-modal').classList.contains('hidden')) buildPendingRequestsList();
+  });
+
+  // Host: requester disconnected / cancelled
+  S.socket.on('table:join_request_cancelled', ({ requestId, playerId }) => {
+    S.pendingJoinRequests = S.pendingJoinRequests.filter(
+      r => r.requestId !== requestId && r.playerId !== playerId,
+    );
+    updatePendingBadge();
+    if (!$('options-modal').classList.contains('hidden')) buildPendingRequestsList();
+  });
+
+  // Host: request resolved (after approve or reject)
+  S.socket.on('table:join_request_resolved', ({ requestId }) => {
+    S.pendingJoinRequests = S.pendingJoinRequests.filter(r => r.requestId !== requestId);
+    updatePendingBadge();
+    if (!$('options-modal').classList.contains('hidden')) buildPendingRequestsList();
   });
 
   // ── Table ──────────────────────────────────────────────────
@@ -1414,14 +1625,17 @@ function connectSocket() {
       $('phase-lbl').textContent = '';
       clearTimer(); clearSeatTimer(); clearActions(true);
 
+      let myStackHitZero = false;
       p.finalSeats.forEach(fs => {
         if (fs && S.seats[fs.seatIndex]) {
           S.seats[fs.seatIndex].stack = fs.stack;
           if (S.ledger[fs.playerId]) S.ledger[fs.playerId].currentStack = fs.stack;
           else S.ledger[fs.playerId] = { displayName: S.seats[fs.seatIndex]?.displayName || '', totalBuyIn: 0, currentStack: fs.stack };
+          if (fs.playerId === S.playerId && fs.stack === 0) myStackHitZero = true;
         }
       });
       renderSeats();
+      if (myStackHitZero) setTimeout(showRebuyModal, 1500);
 
       if (S.winnerTmo) clearTimeout(S.winnerTmo);
       S.winnerTmo = setTimeout(() => {
@@ -1434,14 +1648,14 @@ function connectSocket() {
 
   S.socket.on('table:host_changed', d => {
     S.hostPlayerId = d.newHostPlayerId;
-    S.isHostPlayer = d.newHostPlayerId === S.socket.id;
+    S.isHostPlayer = d.newHostPlayerId === S.playerId;
     renderSeats();
     if ($('options-modal') && !$('options-modal').classList.contains('hidden')) populateOptions();
     log(`<span class="ls">Host transferred</span>`);
   });
 
   S.socket.on('hand:rit_vote_request', p => {
-    if (!p.eligiblePlayerIds.includes(S.socket.id)) return;
+    if (!p.eligiblePlayerIds.includes(S.playerId)) return;
     S.pendingRitHandId = p.handId;
     // Start 15s countdown
     let remaining = 15;
@@ -1471,8 +1685,9 @@ function renderGrid() {
     const occ = t.seats.filter(Boolean).length;
     const sc  = t.status === 'running' ? 's-running' : 's-waiting';
     const sl  = t.status === 'running' ? 'Running'   : 'Waiting';
-    return `<div class="table-card" onclick="openJoin('${t.config.tableId}')">
+    return `<div class="table-card" style="position:relative" onclick="openJoin('${t.config.tableId}')">
       <span class="tc-status ${sc}">${sl}</span>
+      <button class="tc-copy-link" onclick="event.stopPropagation();copyLobbyLink('${t.config.tableId}')" title="Copy invite link">⎘</button>
       <div class="tc-name">${t.config.name}</div>
       <div class="tc-variant">${t.config.variant}</div>
       <div class="tc-stats">
@@ -1494,24 +1709,13 @@ function createTable() {
     bigBlind:   parseInt($('ct-bb').value),
     minBuyIn:   parseInt($('ct-minbuy').value),
     maxBuyIn:   parseInt($('ct-maxbuy').value),
+    buyIn:      parseInt($('ct-buyin').value) || parseInt($('ct-minbuy').value),
   });
 }
 
-function openJoin(tableId) {
-  S.pendingTableId = tableId;
-  const t = S.tables[tableId]; if (!t) return;
-  $('join-info').textContent = `${t.config.name} · ${t.config.variant} · ${fmt(t.config.smallBlind)}/${fmt(t.config.bigBlind)}`;
-  $('join-buyin').value = t.config.minBuyIn;
-  $('join-buyin').min   = t.config.minBuyIn;
-  $('join-buyin').max   = t.config.maxBuyIn;
-  $('join-modal').classList.remove('hidden');
-}
-function closeJoin() { $('join-modal').classList.add('hidden'); S.pendingTableId = null; }
-function confirmJoin() {
-  if (!S.pendingTableId) return;
-  S.socket.emit('lobby:join_table', { tableId: S.pendingTableId, buyIn: parseInt($('join-buyin').value) });
-  closeJoin();
-}
+// All lobby joins now go through the approval flow
+function openJoin(tableId) { openRequestJoin(tableId); }
+function closeJoin() { $('join-modal').classList.add('hidden'); }
 
 // ════════════════════════════════════════════════════════════
 //  TABLE
@@ -1556,20 +1760,25 @@ function enterTable(state) {
   S.isHostPlayer  = !!state.isYouHost;   // server tells us explicitly
   S.settings      = state.settings;
   S.ledger      = {};
+  S.myPendingRequest  = null;
+  S.pendingJoinRequests = state.pendingJoinRequests || [];
 
   state.seats.forEach((s, i) => {
     if (!s) return;
-    if (s.playerId === S.socket.id) S.mySeatIndex = i;
+    if (s.playerId === S.playerId) S.mySeatIndex = i;
     S.ledger[s.playerId] = { displayName: s.displayName, totalBuyIn: s.stack, currentStack: s.stack };
   });
 
   $('tbl-name').textContent    = state.config.name;
   $('tbl-variant').textContent = state.config.variant;
   $('tbl-blinds').textContent  = `${fmt(state.config.smallBlind)} / ${fmt(state.config.bigBlind)}`;
+  // Update sound button to match persisted state
+  $('btn-sound').textContent = soundEnabled ? '♪ On' : '♪ Off';
   showScreen('screen-table');
   renderSeats();
   setPot(0);
-  log(`<span class="ls">Joined ${state.config.name}${state.hostPlayerId === S.socket.id ? ' — you are the host' : ''}</span>`);
+  updatePendingBadge();
+  log(`<span class="ls">Joined ${state.config.name}${state.hostPlayerId === S.playerId ? ' — you are the host' : ''}</span>`);
 }
 
 function leaveTable() {
@@ -1592,7 +1801,7 @@ function renderSeats() {
   for (let i = 0; i < n; i++) {
     const p    = pos[i] || { l: 50, t: 50 };
     const seat = S.seats ? S.seats[i] : null;
-    const isMe      = seat && seat.playerId === S.socket?.id;
+    const isMe      = seat && seat.playerId === S.playerId;
     const isActing  = i === S.currentActorSeat;
     const isFolded  = seat?.status === 'folded';
     const isAllIn   = seat?.status === 'all-in';
@@ -1870,6 +2079,9 @@ function populateOptions() {
 
   // Player list
   buildPlayerList(locked);
+
+  // Pending requests (host only)
+  buildPendingRequestsList();
 }
 
 function buildPlayerList(locked) {
@@ -1883,7 +2095,7 @@ function buildPlayerList(locked) {
     row.className = 'player-row';
 
     const isHostP = seat.playerId === S.hostPlayerId;
-    const isMe = seat.playerId === S.socket?.id;
+    const isMe = seat.playerId === S.playerId;
     row.innerHTML = `
       <div class="player-row-name">${seat.displayName}${isHostP ? ' <span class="host-badge">host</span>' : ''}</div>
       <div class="player-row-stack" id="pr-stack-${seat.seatIndex}">${fmt(seat.stack)}</div>
@@ -1934,10 +2146,13 @@ function pushSetting(key, value) {
 function setPotFraction(fraction) {
   const sl = $('bet-slider');
   if (!sl) return;
-  // Standard pot-fraction formula: call + fraction*(pot+call)
-  // This matches what poker sites use: "pot raise" = call the bet then bet the new pot
+  // Slider value = total street commitment (matches server's minAmount/maxAmount).
+  // currentBet = callAmt + myStreetBet (chips already in this street).
+  // Pot-fraction formula: currentBet + fraction*(pot + callAmt)
   const callAmt = S.validActions.find(a => a.type === 'call')?.amount || 0;
-  const raw = Math.round(callAmt + (S.pot + callAmt) * fraction);
+  const myStreetBet = S.seatBets[S.mySeatIndex] || 0;
+  const currentBet = callAmt + myStreetBet;
+  const raw = Math.round(currentBet + (S.pot + callAmt) * fraction);
   const clamped = Math.max(parseInt(sl.min), Math.min(parseInt(sl.max), raw));
   sl.value = clamped;
   $('bet-val').textContent = fmt(clamped);
@@ -2000,6 +2215,173 @@ function voteRIT(yes) {
   if (S.ritCountdownIv) { clearInterval(S.ritCountdownIv); S.ritCountdownIv = null; }
   S.pendingRitHandId = null;
   $('rit-modal').classList.add('hidden');
+}
+
+// ════════════════════════════════════════════════════════════
+//  COPY TABLE LINK
+// ════════════════════════════════════════════════════════════
+function copyTableLink() {
+  const url = window.location.origin + window.location.pathname + '?table=' + S.tableId;
+  navigator.clipboard.writeText(url).then(() => {
+    const btn = $('btn-copy-link') || document.querySelector('[onclick="copyTableLink()"]');
+    if (btn) { const orig = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = orig, 2000); }
+  }).catch(() => prompt('Copy this link:', url));
+}
+
+function copyLobbyLink(tableId) {
+  const url = window.location.origin + window.location.pathname + '?table=' + tableId;
+  navigator.clipboard.writeText(url).catch(() => prompt('Copy this link:', url));
+}
+
+// ════════════════════════════════════════════════════════════
+//  REQUEST JOIN FLOW
+// ════════════════════════════════════════════════════════════
+function openRequestJoin(tableId) {
+  S.pendingTableId = tableId;
+  const t = S.tables[tableId];
+  if (!t) return;
+
+  $('rj-title').textContent = 'Request to Join — ' + t.config.name;
+  $('rj-info').textContent =
+    t.config.variant + ' · ' + fmt(t.config.smallBlind) + '/' + fmt(t.config.bigBlind) +
+    ' · Buy-in: ' + fmt(t.config.minBuyIn) + '–' + fmt(t.config.maxBuyIn);
+  $('rj-buyin').value = t.config.minBuyIn;
+  $('rj-buyin').min   = t.config.minBuyIn;
+  $('rj-buyin').max   = t.config.maxBuyIn;
+
+  // Build seat picker
+  const grid = $('rj-seat-grid');
+  grid.innerHTML = '';
+  S._selectedSeat = null;
+  for (let i = 0; i < t.config.maxSeats; i++) {
+    const occupied = t.seats[i] !== null;
+    const btn = document.createElement('button');
+    btn.className = 'seat-pick-btn' + (occupied ? ' seat-taken' : '');
+    btn.disabled  = occupied;
+    btn.textContent = 'Seat ' + (i + 1);
+    if (!occupied) {
+      btn.onclick = () => {
+        grid.querySelectorAll('.seat-pick-btn').forEach(b => b.classList.remove('selected'));
+        if (S._selectedSeat === i) {
+          S._selectedSeat = null; // deselect
+        } else {
+          btn.classList.add('selected');
+          S._selectedSeat = i;
+        }
+      };
+    }
+    grid.appendChild(btn);
+  }
+
+  $('request-join-modal').classList.remove('hidden');
+}
+
+function closeRequestJoin() {
+  $('request-join-modal').classList.add('hidden');
+  S.pendingTableId = null;
+  S._selectedSeat = null;
+}
+
+function confirmRequestJoin() {
+  if (!S.pendingTableId) return;
+  const buyIn = parseInt($('rj-buyin').value);
+  S.socket.emit('lobby:request_join', {
+    tableId: S.pendingTableId,
+    buyIn,
+    preferredSeatIndex: S._selectedSeat !== null ? S._selectedSeat : null,
+  });
+  closeRequestJoin();
+}
+
+function cancelJoinRequest() {
+  if (S.myPendingRequest) {
+    S.socket.emit('lobby:cancel_join_request', { tableId: S.myPendingRequest.tableId });
+    S.myPendingRequest = null;
+  }
+  showScreen('screen-lobby');
+  S.socket.emit('lobby:list_tables');
+}
+
+// ════════════════════════════════════════════════════════════
+//  HOST — PENDING REQUESTS UI
+// ════════════════════════════════════════════════════════════
+function updatePendingBadge() {
+  const count = S.pendingJoinRequests.length;
+  const badge = $('options-badge');
+  if (!badge) return;
+  if (count > 0 && S.isHostPlayer) {
+    badge.classList.remove('hidden');
+    badge.textContent = count;
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function buildPendingRequestsList() {
+  const section = $('pending-requests-section');
+  const list    = $('pending-requests-list');
+  const badge   = $('pending-count-badge');
+  if (!section || !list) return;
+
+  if (!S.isHostPlayer || S.pendingJoinRequests.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = '';
+  badge.textContent = S.pendingJoinRequests.length;
+  list.innerHTML = '';
+
+  S.pendingJoinRequests.forEach(req => {
+    const row = document.createElement('div');
+    row.className = 'player-row';
+    row.style.cssText = 'flex-wrap:wrap;gap:6px;align-items:center';
+    row.innerHTML = `
+      <div class="player-row-name" style="flex:1;min-width:100px">${req.displayName}</div>
+      <div style="font-size:11px;color:var(--text-dim);min-width:56px">
+        ${req.preferredSeatIndex !== null ? 'Seat ' + (req.preferredSeatIndex + 1) : 'Any seat'}
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--gold);min-width:55px">${fmt(req.requestedBuyIn)}</div>
+      <input type="number" class="chip-amount" id="req-buyin-${req.requestId}"
+        value="${req.requestedBuyIn}"
+        min="${S.tableConfig?.minBuyIn || 0}"
+        max="${S.tableConfig?.maxBuyIn || 999999}"
+        style="width:80px">
+      <button class="chip-btn" style="color:var(--green-acc);border-color:rgba(74,175,114,0.3)" title="Approve"
+        onclick="approveRequest('${req.requestId}')">✓</button>
+      <button class="chip-btn" style="color:#e06060;border-color:rgba(192,64,58,0.3)" title="Reject"
+        onclick="rejectRequest('${req.requestId}')">✕</button>
+    `;
+    list.appendChild(row);
+  });
+}
+
+function approveRequest(requestId) {
+  const input = $('req-buyin-' + requestId);
+  const buyIn = parseInt(input?.value || '0');
+  S.socket.emit('table:approve_join', { requestId, finalBuyIn: buyIn });
+}
+
+function rejectRequest(requestId) {
+  S.socket.emit('table:reject_join', { requestId });
+}
+
+// ════════════════════════════════════════════════════════════
+//  REBUY
+// ════════════════════════════════════════════════════════════
+function showRebuyModal() {
+  if (!S.tableConfig) return;
+  $('rebuy-amount').value = S.tableConfig.minBuyIn;
+  $('rebuy-amount').min   = S.tableConfig.minBuyIn;
+  $('rebuy-amount').max   = S.tableConfig.maxBuyIn;
+  $('rebuy-modal').classList.remove('hidden');
+}
+
+function confirmRebuy() {
+  const amount = parseInt($('rebuy-amount').value);
+  if (isNaN(amount) || amount <= 0) return;
+  S.socket.emit('table:rebuy_request', { amount });
+  $('rebuy-modal').classList.add('hidden');
 }
 </script>
 </body>

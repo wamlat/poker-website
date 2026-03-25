@@ -175,6 +175,15 @@ export const DEFAULT_TABLE_SETTINGS: TableSettings = {
   actionTimeoutSeconds: 20,
 };
 
+export interface PendingJoinRequest {
+  requestId: string;
+  playerId: string;
+  displayName: string;
+  requestedBuyIn: number;
+  preferredSeatIndex: number | null;
+  requestedAt: number;
+}
+
 export interface TableState {
   config: TableConfig;
   seats: (Seat | null)[];
@@ -185,6 +194,7 @@ export interface TableState {
   dealerSeatIndex: number;
   hostPlayerId: string;
   settings: TableSettings;
+  pendingJoinRequests: PendingJoinRequest[];
 }
 
 // ─── Ledger ───────────────────────────────────────────────────────────────────
