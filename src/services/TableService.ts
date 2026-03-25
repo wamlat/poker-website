@@ -72,7 +72,10 @@ export class TableService {
     }
 
     const seatIndex =
-      preferredSeat !== undefined && state.seats[preferredSeat] === null
+      preferredSeat !== undefined &&
+      preferredSeat >= 0 &&
+      preferredSeat < state.seats.length &&
+      state.seats[preferredSeat] === null
         ? preferredSeat
         : state.seats.findIndex((s) => s === null);
 
@@ -92,15 +95,26 @@ export class TableService {
     return { state, seatIndex };
   }
 
-  leaveTable(tableId: string, playerId: string): void {
+  leaveTable(tableId: string, playerId: string): { newHostPlayerId?: string } {
     const state = tableStateRepo.getTableState(tableId);
-    if (!state) return;
+    if (!state) return {};
 
     const seatIndex = state.seats.findIndex((s) => s?.playerId === playerId);
-    if (seatIndex === -1) return;
+    if (seatIndex === -1) return {};
 
     state.seats[seatIndex] = null;
+
+    let newHostPlayerId: string | undefined;
+    if (state.hostPlayerId === playerId) {
+      const nextHost = state.seats.find((s) => s !== null && s.playerId !== playerId);
+      if (nextHost) {
+        state.hostPlayerId = nextHost.playerId;
+        newHostPlayerId = nextHost.playerId;
+      }
+    }
+
     tableStateRepo.saveTableState(tableId, state);
+    return { newHostPlayerId };
   }
 
   adjustChips(tableId: string, requesterPlayerId: string, targetPlayerId: string, amount: number): TableState {
@@ -135,6 +149,18 @@ export class TableService {
     const state = tableStateRepo.getTableState(tableId);
     if (!state) throw new Error('Table not found');
     if (state.hostPlayerId !== requesterPlayerId) throw new Error('Only the host can change settings');
+
+    if (patch.actionTimeoutSeconds !== undefined) {
+      if (!Number.isInteger(patch.actionTimeoutSeconds) || patch.actionTimeoutSeconds < 5 || patch.actionTimeoutSeconds > 120) {
+        throw new Error('actionTimeoutSeconds must be an integer between 5 and 120');
+      }
+    }
+    if (patch.autoDealDelaySeconds !== undefined && ![2, 4, 6].includes(patch.autoDealDelaySeconds)) {
+      throw new Error('autoDealDelaySeconds must be 2, 4, or 6');
+    }
+    if (patch.showdownReveal !== undefined && !['standard', 'always', 'never'].includes(patch.showdownReveal)) {
+      throw new Error('Invalid showdownReveal value');
+    }
 
     state.settings = { ...state.settings, ...patch };
 

@@ -51,7 +51,6 @@ export class ActionValidator {
     const actions: ValidAction[] = [];
     const callAmount = Math.min(snapshot.currentBet - seat.currentStreetBet, seat.stack);
     const bettingState = this.toBettingState(snapshot, seat);
-    const isPotLimit = this.bettingEngine.structureName === 'Pot Limit';
 
     // Fold is always available
     actions.push({ type: 'fold' });
@@ -65,9 +64,10 @@ export class ActionValidator {
       actions.push({ type: 'call', amount: callAmount });
     }
 
-    // Explicit all-in shove: only for no-limit, and only when it's aggressive
-    // (total commitment would exceed the current bet — i.e. a real raise, not a call).
-    if (!isPotLimit && seat.currentStreetBet + seat.stack > snapshot.currentBet) {
+    // Explicit all-in shove: available in any betting structure when it would be
+    // aggressive (total commitment exceeds current bet). In pot-limit this covers the
+    // short-shove case where stack < minRaise so the raise action isn't available.
+    if (seat.currentStreetBet + seat.stack > snapshot.currentBet) {
       actions.push({ type: 'all-in', amount: seat.stack });
     }
 

@@ -91,10 +91,37 @@ export class GameService {
       action.seatIndex = idx;
     }
 
+    // Preserve the existing deadline so invalid actions cannot reset the clock
+    const existingDeadline = tableStateRepo.getActionTimer(action.handId);
     this.clearTimeout(action.handId);
 
     const events = machine.act(action);
     const snapshot = machine.getSnapshot();
+
+    // If the FSM rejected the action, restore the original timer and bail out
+    if (events.length === 1 && events[0].type === 'hand_error') {
+      if (existingDeadline !== null) {
+        tableStateRepo.setActionTimer(action.handId, existingDeadline);
+        const remainingMs = Math.max(0, existingDeadline - Date.now());
+        const handle = setTimeout(() => {
+          const deadline = tableStateRepo.getActionTimer(action.handId);
+          if (deadline === null) return;
+          const snap = tableStateRepo.getHandSnapshot(action.handId);
+          if (!snap || snap.currentActorSeatIndex === null) return;
+          const actor = snap.seats[snap.currentActorSeatIndex] as SeatState;
+          if (!actor) return;
+          this.processAction(tableId, {
+            handId: action.handId,
+            playerId: actor.playerId,
+            seatIndex: actor.seatIndex,
+            action: snap.currentBet === actor.currentStreetBet ? 'check' : 'fold',
+          }, emit);
+        }, remainingMs);
+        this.timeouts.set(action.handId, handle);
+      }
+      emit(events[0].type, events[0].payload, events[0].privateToPlayerId);
+      return;
+    }
 
     const tableState = tableStateRepo.getTableState(tableId);
     if (tableState) {
@@ -121,6 +148,10 @@ export class GameService {
     }
 
     if (snapshot.phase === 'complete') {
+      // Emit events before triggering auto-deal so the client receives them first
+      for (const event of events) {
+        emit(event.type, event.payload, event.privateToPlayerId);
+      }
       this.onHandComplete(tableId, tableState, snapshot, emit);
     } else {
       const timeoutSeconds = tableState?.settings.actionTimeoutSeconds ?? 20;
@@ -134,11 +165,6 @@ export class GameService {
         }
         emit(event.type, event.payload, event.privateToPlayerId);
       }
-      return;
-    }
-
-    for (const event of events) {
-      emit(event.type, event.payload, event.privateToPlayerId);
     }
   }
 
@@ -205,15 +231,15 @@ export class GameService {
     }
     tableStateRepo.saveHandSnapshot(snapshot.handId, snapshot);
 
+    // Emit all events first so the client starts processing before auto-deal fires
+    for (const event of events) {
+      emit(event.type, event.payload, event.privateToPlayerId);
+    }
+
     if (snapshot.phase === 'complete') {
-      this.onHandComplete(tableId, tableState, snapshot, emit);
-      for (const event of events) {
-        emit(event.type, event.payload, event.privateToPlayerId);
-      }
-    } else {
-      for (const event of events) {
-        emit(event.type, event.payload, event.privateToPlayerId);
-      }
+      // Add a 4 s buffer on top of the user-configured delay so auto-deal never
+      // fires while the client is still animating the RIT run-out (~3 s total).
+      this.onHandComplete(tableId, tableState, snapshot, emit, 4000);
     }
   }
 
@@ -222,6 +248,7 @@ export class GameService {
     tableState: TableState | null,
     snapshot: HandSnapshot,
     emit: EmitFn,
+    autoDealExtraDelayMs = 0,
   ): void {
     // Cache hole cards for post-hand reveal
     const holeCards: Record<string, Card[]> = {};
@@ -239,7 +266,7 @@ export class GameService {
       tableStateRepo.saveTableState(tableId, tableState);
 
       if (tableState.settings.autoDeal) {
-        this.scheduleAutoDeal(tableId, tableState.settings.autoDealDelaySeconds * 1000, emit);
+        this.scheduleAutoDeal(tableId, tableState.settings.autoDealDelaySeconds * 1000 + autoDealExtraDelayMs, emit);
       }
     }
   }

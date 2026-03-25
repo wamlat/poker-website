@@ -22,26 +22,29 @@ const EVENT_MAP: Record<string, string> = {
   hand_error:      'hand:error',
 };
 
+/**
+ * Creates a table-scoped emit function that does NOT depend on any individual
+ * socket's connection state. Safe to capture in delayed callbacks (auto-deal,
+ * action timers, RIT vote timeouts) because it reads tableId from its closure,
+ * not from socket.data.currentTableId at call time.
+ */
+function makeTableEmit(io: Server, tableId: string) {
+  return (eventType: string, payload: unknown, privateToPlayerId?: string) => {
+    const socketEvent = EVENT_MAP[eventType] ?? eventType;
+    if (privateToPlayerId) {
+      const targetSockets = Array.from(io.sockets.sockets.values()).filter(
+        (s) => (s as AuthenticatedSocket).data.userId === privateToPlayerId,
+      );
+      for (const s of targetSockets) s.emit(socketEvent, payload);
+    } else {
+      io.to(`table:${tableId}`).emit(socketEvent, payload);
+    }
+  };
+}
+
 export function registerTableHandlers(io: Server): void {
   io.on('connection', (socket: AuthenticatedSocket) => {
     const userId = socket.data.userId;
-
-    const emit = (eventType: string, payload: unknown, privateToPlayerId?: string) => {
-      const socketEvent = EVENT_MAP[eventType] ?? eventType;
-      const tableId = socket.data.currentTableId as string | undefined;
-      if (!tableId) return;
-
-      if (privateToPlayerId) {
-        const targetSockets = Array.from(io.sockets.sockets.values()).filter(
-          (s) => (s as AuthenticatedSocket).data.userId === privateToPlayerId,
-        );
-        for (const s of targetSockets) {
-          s.emit(socketEvent, payload);
-        }
-      } else {
-        io.to(`table:${tableId}`).emit(socketEvent, payload);
-      }
-    };
 
     socket.on('hand:action', async (payload) => {
       const tableId = socket.data.currentTableId as string | undefined;
@@ -56,7 +59,7 @@ export function registerTableHandlers(io: Server): void {
           action: payload.action,
           amount: payload.amount,
         },
-        emit,
+        makeTableEmit(io, tableId),
       );
     });
 
@@ -87,7 +90,7 @@ export function registerTableHandlers(io: Server): void {
       if (!state || state.hostPlayerId !== userId) return;
       // Cancel any pending auto-deal when host manually starts
       gameService.cancelAutoDeal(tableId);
-      const started = gameService.startHand(tableId, emit);
+      const started = gameService.startHand(tableId, makeTableEmit(io, tableId));
       if (!started) {
         socket.emit('hand:error', { code: 'CANNOT_START', message: 'Need at least 2 players with enough chips' });
       }
@@ -152,6 +155,16 @@ export function registerTableHandlers(io: Server): void {
       if (!tableId) return;
       try {
         const { state, seatIndex } = tableService.removePlayer(tableId, userId, payload.targetPlayerId);
+
+        // Evict the removed player's socket(s) from the table room
+        for (const s of Array.from(io.sockets.sockets.values())) {
+          const sock = s as AuthenticatedSocket;
+          if (sock.data.userId === payload.targetPlayerId && sock.data.currentTableId === tableId) {
+            sock.leave(`table:${tableId}`);
+            sock.data.currentTableId = undefined;
+          }
+        }
+
         io.to(`table:${tableId}`).emit('table:player_left', { playerId: payload.targetPlayerId, seatIndex });
         io.to('lobby').emit('lobby:table_updated', state);
       } catch (err: unknown) {
@@ -163,8 +176,9 @@ export function registerTableHandlers(io: Server): void {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
       try {
-        tableService.transferHost(tableId, userId, payload.newHostPlayerId);
+        const state = tableService.transferHost(tableId, userId, payload.newHostPlayerId);
         io.to(`table:${tableId}`).emit('table:host_changed', { newHostPlayerId: payload.newHostPlayerId });
+        io.to('lobby').emit('lobby:table_updated', state);
       } catch (err: unknown) {
         socket.emit('hand:error', { code: 'TRANSFER_HOST_FAILED', message: err instanceof Error ? err.message : 'Failed' });
       }
@@ -173,7 +187,7 @@ export function registerTableHandlers(io: Server): void {
     socket.on('hand:rit_vote', (payload) => {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
-      gameService.recordRITVote(tableId, payload.handId, userId, payload.yes, emit);
+      gameService.recordRITVote(tableId, payload.handId, userId, payload.yes, makeTableEmit(io, tableId));
     });
 
     socket.on('table:leave', async () => {
@@ -183,9 +197,12 @@ export function registerTableHandlers(io: Server): void {
       try {
         const state = tableService.getTableState(tableId);
         const seatIndex = state ? state.seats.findIndex((s) => s?.playerId === userId) : -1;
-        await tableService.leaveTable(tableId, userId);
+        const { newHostPlayerId } = tableService.leaveTable(tableId, userId);
         socket.leave(`table:${tableId}`);
         io.to(`table:${tableId}`).emit('table:player_left', { playerId: userId, seatIndex });
+        if (newHostPlayerId) {
+          io.to(`table:${tableId}`).emit('table:host_changed', { newHostPlayerId });
+        }
         socket.data.currentTableId = undefined;
         const updated = tableService.getTableState(tableId);
         if (updated) io.to('lobby').emit('lobby:table_updated', updated);
@@ -199,13 +216,14 @@ export function registerTableHandlers(io: Server): void {
       if (tableId) {
         const state = tableService.getTableState(tableId);
         const seatIndex = state ? state.seats.findIndex((s) => s?.playerId === userId) : -1;
+        let newHostPlayerId: string | undefined;
         try {
-          await tableService.leaveTable(tableId, userId);
+          ({ newHostPlayerId } = tableService.leaveTable(tableId, userId));
         } catch { /* ignore */ }
-        io.to(`table:${tableId}`).emit('table:player_left', {
-          seatIndex,
-          playerId: userId,
-        });
+        io.to(`table:${tableId}`).emit('table:player_left', { seatIndex, playerId: userId });
+        if (newHostPlayerId) {
+          io.to(`table:${tableId}`).emit('table:host_changed', { newHostPlayerId });
+        }
         const updated = tableService.getTableState(tableId);
         if (updated) io.to('lobby').emit('lobby:table_updated', updated);
       }

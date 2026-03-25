@@ -174,13 +174,16 @@ export class HandStateMachine {
         const allInAmount = seat.stack;
         if (seat.currentStreetBet + allInAmount > this.snapshot.currentBet) {
           const raiseSize = seat.currentStreetBet + allInAmount - this.snapshot.currentBet;
-          if (raiseSize > this.snapshot.lastRaiseSize) {
-            this.snapshot.lastRaiseSize = raiseSize;
-          }
           this.snapshot.currentBet = seat.currentStreetBet + allInAmount;
           this.snapshot.lastAggressorSeatIndex = seat.seatIndex;
-          for (const s of this.getActiveSeatStates()) {
-            if (s.seatIndex !== seat.seatIndex) s.hasActedThisStreet = false;
+          // Only a full raise (>= lastRaiseSize) reopens action for players who
+          // already acted. A short all-in increases the call amount but does NOT
+          // give those players another chance to re-raise.
+          if (raiseSize >= this.snapshot.lastRaiseSize) {
+            this.snapshot.lastRaiseSize = raiseSize;
+            for (const s of this.getActiveSeatStates()) {
+              if (s.seatIndex !== seat.seatIndex) s.hasActedThisStreet = false;
+            }
           }
         }
         this.addToPot(seat, allInAmount);
@@ -217,7 +220,7 @@ export class HandStateMachine {
         (s) => s.status === 'active' || s.status === 'all-in',
       );
       if (
-        activePlayers.length === 0 &&
+        activePlayers.length <= 1 &&
         this.settings.runItTwice &&
         this.hasCardsRemaining() &&
         contenders.length >= 2
@@ -311,8 +314,8 @@ export class HandStateMachine {
     });
 
     const activePlayers = this.getActiveSeatStates().filter((s) => s.status === 'active');
-    if (activePlayers.length === 0) {
-      // All-in runout — check for run-it-twice
+    if (activePlayers.length <= 1) {
+      // All-in runout (0 active, or 1 active with no one to bet into) — check for run-it-twice
       if (this.settings.runItTwice && this.hasCardsRemaining()) {
         events.push(...this.runItTwice());
       } else {
@@ -340,6 +343,7 @@ export class HandStateMachine {
    * Run-it-twice: deal remaining board cards a second time and split the pot.
    * Called only when all players are all-in and ≥1 card remains.
    * Board 2 shares the already-dealt community cards and gets fresh remaining cards.
+   * Each side pot is split independently between both boards.
    */
   private runItTwice(): HandEvent[] {
     const events: HandEvent[] = [];
@@ -365,25 +369,50 @@ export class HandStateMachine {
       payload: { board: board2 },
     });
 
-    // Evaluate both boards and split pot
     const contenders = this.getActiveSeatStates().filter(
       (s) => s.status === 'active' || s.status === 'all-in',
     );
 
-    const halfPot = Math.floor(this.snapshot.pot / 2);
-    const remainder = this.snapshot.pot % 2;
+    // Calculate side pots — handles players all-in for different amounts
+    const potResult = this.potManager.calculatePots(
+      contenders.filter((s) => s.status === 'active').map((s) => s.playerId),
+    );
+    const potsToAward =
+      potResult.sidePots.length > 0
+        ? potResult.sidePots
+        : [{ amount: this.snapshot.pot, eligiblePlayerIds: contenders.map((s) => s.playerId) }];
 
-    const board1Winners = this.evaluateBoard(board1, contenders);
-    const board2Winners = this.evaluateBoard(board2, contenders);
+    const board1WinnersPayload: { seatIndex: number; playerId: string; amount: number }[] = [];
+    const board2WinnersPayload: { seatIndex: number; playerId: string; amount: number }[] = [];
 
-    // Award half pot to board 1 winners
-    const b1Each = Math.floor(halfPot / board1Winners.length);
-    for (const w of board1Winners) w.stack += b1Each;
+    for (const pot of potsToAward) {
+      const eligible = contenders.filter((s) => pot.eligiblePlayerIds.includes(s.playerId));
+      if (eligible.length === 0) continue;
 
-    // Award half pot (+ remainder chip) to board 2 winners
-    const b2Share = halfPot + remainder;
-    const b2Each = Math.floor(b2Share / board2Winners.length);
-    for (const w of board2Winners) w.stack += b2Each;
+      const halfPot = Math.floor(pot.amount / 2);
+      const potOdd = pot.amount % 2; // odd chip goes to the board-1 first winner
+
+      // Board 1 gets halfPot + any odd chip from this pot
+      const b1Total = halfPot + potOdd;
+      const b1Winners = this.evaluateBoard(board1, eligible);
+      const b1Share = Math.floor(b1Total / b1Winners.length);
+      const b1Odd = b1Total % b1Winners.length;
+      for (let i = 0; i < b1Winners.length; i++) {
+        const award = b1Share + (i === 0 ? b1Odd : 0);
+        b1Winners[i].stack += award;
+        board1WinnersPayload.push({ seatIndex: b1Winners[i].seatIndex, playerId: b1Winners[i].playerId, amount: award });
+      }
+
+      // Board 2 gets halfPot exactly
+      const b2Winners = this.evaluateBoard(board2, eligible);
+      const b2Share = Math.floor(halfPot / b2Winners.length);
+      const b2Odd = halfPot % b2Winners.length;
+      for (let i = 0; i < b2Winners.length; i++) {
+        const award = b2Share + (i === 0 ? b2Odd : 0);
+        b2Winners[i].stack += award;
+        board2WinnersPayload.push({ seatIndex: b2Winners[i].seatIndex, playerId: b2Winners[i].playerId, amount: award });
+      }
+    }
 
     events.push({
       type: 'showdown',
@@ -396,9 +425,9 @@ export class HandStateMachine {
           playerId: s.playerId,
           holeCards: this.settings.showdownReveal !== 'never' ? s.holeCards : [],
         })),
-        board1Winners: board1Winners.map((w) => ({ seatIndex: w.seatIndex, playerId: w.playerId, amount: b1Each })),
-        board2Winners: board2Winners.map((w) => ({ seatIndex: w.seatIndex, playerId: w.playerId, amount: b2Each + (board2Winners.length === 1 ? remainder : 0) })),
-        sidePots: [],
+        board1Winners: board1WinnersPayload,
+        board2Winners: board2WinnersPayload,
+        sidePots: potResult.sidePots,
       },
     });
 

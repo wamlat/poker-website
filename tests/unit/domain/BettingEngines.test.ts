@@ -6,6 +6,7 @@ const baseState: BettingState = {
   potSize: 100,
   currentBet: 20,
   playerStack: 500,
+  playerStreetBet: 0,
   bigBlind: 20,
   lastRaiseSize: 20,
 };

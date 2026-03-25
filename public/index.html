@@ -296,7 +296,8 @@
       border-radius: 20px; border: 1px solid rgba(200,168,75,0.18);
     }
 
-    .community-cards { display: flex; gap: 7px; align-items: center; min-height: 72px; }
+    .community-cards { display: flex; gap: 7px; align-items: center; min-height: 82px; }
+    .board-label { font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(255,255,255,0.3); }
 
     .phase-label {
       font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
@@ -1220,6 +1221,9 @@ function connectSocket() {
     $('rit-modal').classList.add('hidden');
     if (S.ritCountdownIv) { clearInterval(S.ritCountdownIv); S.ritCountdownIv = null; }
     S.pendingRitHandId = null;
+    // Remove run-it-twice boards and labels from previous hand
+    const rtb = $('run-two-board'); if (rtb) rtb.remove();
+    document.querySelectorAll('.board-label').forEach(el => el.remove());
     if (S.seats) S.seats.forEach(s => { if (s) s.status = 'active'; });
     renderCommunity();
     $('rabbit-cards').classList.add('hidden');
@@ -1259,14 +1263,25 @@ function connectSocket() {
   S.socket.on('hand:run_two_board', p => {
     enqueue(() => {
       log(`<span class="ls">Run it twice — Board 2</span>`);
-      // Show the second board in a separate row under main community
-      const runTwo = document.createElement('div');
-      runTwo.id = 'run-two-board';
-      runTwo.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
-      runTwo.innerHTML = p.board.map(c => cardHTML(c.rank, c.suit, false, false, true)).join('');
-      const center = document.querySelector('.table-center');
       const existing = $('run-two-board');
       if (existing) existing.remove();
+      // Wrap both boards with labels so players can tell them apart
+      const b1 = $('community');
+      if (b1 && !b1.previousElementSibling?.classList.contains('board-label')) {
+        const lbl1 = document.createElement('div');
+        lbl1.className = 'board-label';
+        lbl1.textContent = 'Board 1';
+        b1.parentElement.insertBefore(lbl1, b1);
+      }
+      const lbl2 = document.createElement('div');
+      lbl2.className = 'board-label';
+      lbl2.textContent = 'Board 2';
+      const runTwo = document.createElement('div');
+      runTwo.id = 'run-two-board';
+      runTwo.className = 'community-cards';
+      runTwo.innerHTML = p.board.map(c => cardHTML(c.rank, c.suit, true, false, true)).join('');
+      const center = document.querySelector('.table-center');
+      center.appendChild(lbl2);
       center.appendChild(runTwo);
       soundCard();
     }, 'board2');
@@ -1385,10 +1400,6 @@ function connectSocket() {
       S.currentDeadlineMs = null;
       $('phase-lbl').textContent = '';
       clearTimer(); clearSeatTimer(); clearActions(true);
-
-      // Remove run-it-twice board
-      const rtb = $('run-two-board');
-      if (rtb) rtb.remove();
 
       p.finalSeats.forEach(fs => {
         if (fs && S.seats[fs.seatIndex]) {
@@ -1513,6 +1524,7 @@ function enterTable(state) {
   // Clean up stale DOM from previous hand
   const rtb = $('run-two-board');
   if (rtb) rtb.remove();
+  document.querySelectorAll('.board-label').forEach(el => el.remove());
   $('winner-banner').classList.add('hidden');
   $('rit-modal').classList.add('hidden');
   $('my-cards').innerHTML = '';
@@ -1909,7 +1921,10 @@ function pushSetting(key, value) {
 function setPotFraction(fraction) {
   const sl = $('bet-slider');
   if (!sl) return;
-  const raw = Math.round(S.pot * fraction);
+  // Standard pot-fraction formula: call + fraction*(pot+call)
+  // This matches what poker sites use: "pot raise" = call the bet then bet the new pot
+  const callAmt = S.validActions.find(a => a.type === 'call')?.amount || 0;
+  const raw = Math.round(callAmt + (S.pot + callAmt) * fraction);
   const clamped = Math.max(parseInt(sl.min), Math.min(parseInt(sl.max), raw));
   sl.value = clamped;
   $('bet-val').textContent = fmt(clamped);
