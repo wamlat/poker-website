@@ -96,7 +96,7 @@ export class TableService {
     return { state, seatIndex };
   }
 
-  leaveTable(tableId: string, playerId: string): { newHostPlayerId?: string } {
+  leaveTable(tableId: string, playerId: string): { newHostPlayerId?: string; deleted?: boolean } {
     const state = tableStateRepo.getTableState(tableId);
     if (!state) return {};
 
@@ -105,9 +105,15 @@ export class TableService {
 
     state.seats[seatIndex] = null;
 
+    // Delete the table when the last player leaves
+    if (state.seats.every((s) => s === null)) {
+      tableStateRepo.deleteTableState(tableId);
+      return { deleted: true };
+    }
+
     let newHostPlayerId: string | undefined;
     if (state.hostPlayerId === playerId) {
-      const nextHost = state.seats.find((s) => s !== null && s.playerId !== playerId);
+      const nextHost = state.seats.find((s) => s !== null);
       if (nextHost) {
         state.hostPlayerId = nextHost.playerId;
         newHostPlayerId = nextHost.playerId;
@@ -142,7 +148,28 @@ export class TableService {
     if (state.hostPlayerId !== requesterPlayerId) throw new Error('Only the host can change the variant');
     if (state.status === 'running') throw new Error('Cannot change variant during a hand');
 
+    const newVariant = getVariant(variant);
+    const seatedCount = state.seats.filter((s) => s !== null).length;
+    if (seatedCount > newVariant.maxPlayers) {
+      throw new Error(
+        `Cannot switch to ${variant}: ${seatedCount} players are seated but the variant only allows ${newVariant.maxPlayers}`,
+      );
+    }
+
     state.config.variant = variant;
+    if (state.config.maxSeats > newVariant.maxPlayers) {
+      // Ensure no seated player would be silently evicted by the truncation
+      const hasPlayerInRemovedSeats = state.seats
+        .slice(newVariant.maxPlayers)
+        .some((s) => s !== null);
+      if (hasPlayerInRemovedSeats) {
+        throw new Error(
+          `Cannot switch to ${variant}: a player is seated beyond the new seat limit of ${newVariant.maxPlayers}`,
+        );
+      }
+      state.config.maxSeats = newVariant.maxPlayers;
+      state.seats = state.seats.slice(0, newVariant.maxPlayers);
+    }
     tableStateRepo.saveTableState(tableId, state);
     return state;
   }
@@ -175,7 +202,7 @@ export class TableService {
     return state;
   }
 
-  removePlayer(tableId: string, requesterPlayerId: string, targetPlayerId: string): { state: TableState; seatIndex: number } {
+  removePlayer(tableId: string, requesterPlayerId: string, targetPlayerId: string): { state: TableState; seatIndex: number; deleted?: boolean } {
     const state = tableStateRepo.getTableState(tableId);
     if (!state) throw new Error('Table not found');
     if (state.hostPlayerId !== requesterPlayerId) throw new Error('Only the host can remove players');
@@ -185,6 +212,19 @@ export class TableService {
     if (seatIndex === -1) throw new Error('Player not found at table');
 
     state.seats[seatIndex] = null;
+
+    // Delete the table if no players remain
+    if (state.seats.every((s) => s === null)) {
+      tableStateRepo.deleteTableState(tableId);
+      return { state, seatIndex, deleted: true };
+    }
+
+    // Reassign host if the removed player was the host
+    if (state.hostPlayerId === targetPlayerId) {
+      const nextHost = state.seats.find((s) => s !== null);
+      if (nextHost) state.hostPlayerId = nextHost.playerId;
+    }
+
     tableStateRepo.saveTableState(tableId, state);
     return { state, seatIndex };
   }

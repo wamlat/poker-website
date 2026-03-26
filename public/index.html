@@ -1411,6 +1411,10 @@ function connectSocket() {
     renderGrid();
     if (S.tableId === t.config.tableId) { S.seats = t.seats; renderSeats(); }
   });
+  S.socket.on('lobby:table_removed', ({ tableId }) => {
+    delete S.tables[tableId];
+    renderGrid();
+  });
 
   // ── Join request events ─────────────────────────────────────
   // Requester: request was received by server
@@ -1504,7 +1508,11 @@ function connectSocket() {
     if (!log) return;
     const el = document.createElement('div');
     el.className = 'chat-msg';
-    el.innerHTML = `<span class="chat-name">${d.displayName}</span> ${d.message}`;
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'chat-name';
+    nameSpan.textContent = d.displayName;
+    el.appendChild(nameSpan);
+    el.appendChild(document.createTextNode(' ' + d.message));
     log.appendChild(el);
     log.scrollTop = log.scrollHeight;
     // Show chat panel briefly if hidden (flash indicator)
@@ -1660,6 +1668,7 @@ function connectSocket() {
       S.pot = p.pot;
       setPot(p.pot);
       if (p.amount) S.seatBets[p.seatIndex] = (S.seatBets[p.seatIndex] || 0) + p.amount;
+      if (p.stack !== undefined && S.seats[p.seatIndex]) S.seats[p.seatIndex].stack = p.stack;
       if (p.action === 'fold' && S.seats[p.seatIndex]) S.seats[p.seatIndex].status = 'folded';
       const name = S.seats[p.seatIndex]?.displayName || `Seat ${p.seatIndex + 1}`;
       const aCls = p.action === 'fold' ? 'lf' : p.action === 'raise' || p.action === 'bet' ? 'lr' : '';
@@ -2081,6 +2090,15 @@ function buildActions() {
       btn.onclick = () => doAction(va.type, va.amount);
     }
     wrap.appendChild(btn);
+
+    // Pot-odds hint on the call button
+    if (va.type === 'call' && va.amount && S.pot > 0) {
+      const odds = Math.round(va.amount / (va.amount + S.pot) * 100);
+      const oddsEl = document.createElement('span');
+      oddsEl.className = 'kbd-hint';
+      oddsEl.textContent = `${odds}% odds`;
+      wrap.appendChild(oddsEl);
+    }
 
     // Keyboard hint
     const hint = va.type === 'fold' ? 'F' : (va.type === 'check' || va.type === 'call') ? 'C' : '';

@@ -10,6 +10,10 @@ export class BettingEngineFactory {
         return new NoLimitEngine();
       case 'pot-limit':
         return new PotLimitEngine();
+      default: {
+        const _exhaustive: never = structure;
+        throw new Error(`Unknown betting structure: ${_exhaustive}`);
+      }
     }
   }
 }

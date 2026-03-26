@@ -187,7 +187,7 @@ export function registerTableHandlers(io: Server): void {
       const tableId = socket.data.currentTableId as string | undefined;
       if (!tableId) return;
       try {
-        const { state, seatIndex } = tableService.removePlayer(tableId, userId, payload.targetPlayerId);
+        const { state, seatIndex, deleted } = tableService.removePlayer(tableId, userId, payload.targetPlayerId);
 
         // Evict the removed player's socket(s) from the table room
         for (const s of Array.from(io.sockets.sockets.values())) {
@@ -199,7 +199,16 @@ export function registerTableHandlers(io: Server): void {
         }
 
         io.to(`table:${tableId}`).emit('table:player_left', { playerId: payload.targetPlayerId, seatIndex });
-        io.to('lobby').emit('lobby:table_updated', tableStateFor(state, ''));
+        if (deleted) {
+          gameService.cancelTable(tableId);
+          io.to('lobby').emit('lobby:table_removed', { tableId });
+        } else {
+          // Notify room if host changed (host removed themselves)
+          if (state.hostPlayerId !== userId) {
+            io.to(`table:${tableId}`).emit('table:host_changed', { newHostPlayerId: state.hostPlayerId });
+          }
+          io.to('lobby').emit('lobby:table_updated', tableStateFor(state, ''));
+        }
       } catch (err: unknown) {
         socket.emit('hand:error', { code: 'REMOVE_PLAYER_FAILED', message: err instanceof Error ? err.message : 'Failed' });
       }
@@ -332,10 +341,13 @@ export function registerTableHandlers(io: Server): void {
 
       const raw = String(payload?.message ?? '').trim();
       if (!raw) return;
-      const message = raw.replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 200);
+      const escape = (s: string) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      const message = escape(raw).slice(0, 200);
+      const displayName = escape(seat.displayName);
       io.to(`table:${tableId}`).emit('table:chat_message', {
         playerId: userId,
-        displayName: seat.displayName,
+        displayName,
         message,
         timestamp: Date.now(),
       });
@@ -352,15 +364,20 @@ export function registerTableHandlers(io: Server): void {
       try {
         const state = tableService.getTableState(tableId);
         const seatIndex = state ? state.seats.findIndex((s) => s?.playerId === userId) : -1;
-        const { newHostPlayerId } = tableService.leaveTable(tableId, userId);
+        const { newHostPlayerId, deleted } = tableService.leaveTable(tableId, userId);
         socket.leave(`table:${tableId}`);
         io.to(`table:${tableId}`).emit('table:player_left', { playerId: userId, seatIndex });
         if (newHostPlayerId) {
           io.to(`table:${tableId}`).emit('table:host_changed', { newHostPlayerId });
         }
         socket.data.currentTableId = undefined;
-        const updated = tableService.getTableState(tableId);
-        if (updated) io.to('lobby').emit('lobby:table_updated', tableStateFor(updated, ''));
+        if (deleted) {
+          gameService.cancelTable(tableId);
+          io.to('lobby').emit('lobby:table_removed', { tableId });
+        } else {
+          const updated = tableService.getTableState(tableId);
+          if (updated) io.to('lobby').emit('lobby:table_updated', tableStateFor(updated, ''));
+        }
       } catch (err) {
         console.error('[Table] leave error:', err);
       }

@@ -1,5 +1,5 @@
 import { Server } from 'socket.io';
-import { tableService } from '../services';
+import { gameService, tableService } from '../services';
 import { AuthenticatedSocket } from './SocketServer';
 
 /** Strip pendingJoinRequests for non-host recipients */
@@ -26,11 +26,43 @@ export function registerLobbyHandlers(io: Server): void {
       socket.data.currentTableId = tableId;
       const stateForClient = tableStateFor(seatedTable, userId);
       socket.emit('table:state', { ...stateForClient, isYouHost: userId === seatedTable.hostPlayerId });
-      return; // skip lobby
-    }
 
-    socket.join('lobby');
-    socket.emit('lobby:table_list', tableService.listTables().map((t) => tableStateFor(t, userId)));
+      // Resync active hand state so the player sees the current board/hole cards/action
+      const handState = gameService.getReconnectHandState(tableId);
+      if (handState) {
+        const { snapshot, actionRequired } = handState;
+        socket.emit('hand:started', {
+          handId: snapshot.handId,
+          variant: snapshot.variant,
+          dealerButtonSeatIndex: snapshot.dealerButtonSeatIndex,
+          smallBlindSeatIndex: snapshot.smallBlindSeatIndex,
+          bigBlindSeatIndex: snapshot.bigBlindSeatIndex,
+          straddleSeatIndex: snapshot.straddleSeatIndex,
+          pot: snapshot.pot,
+        });
+        if (snapshot.communityCards.length > 0) {
+          socket.emit('hand:community_dealt', { cards: snapshot.communityCards, phase: snapshot.phase });
+        }
+        const mySeat = snapshot.seats.find((s) => s?.playerId === userId);
+        if (mySeat?.holeCards?.length) {
+          socket.emit('hand:cards_dealt', { seatIndex: mySeat.seatIndex, holeCards: mySeat.holeCards });
+        }
+        if (actionRequired) {
+          socket.emit('hand:action_required', actionRequired);
+        }
+        const seatBets: Record<number, number> = {};
+        for (const seat of snapshot.seats) {
+          if (seat && seat.currentStreetBet > 0) seatBets[seat.seatIndex] = seat.currentStreetBet;
+        }
+        if (Object.keys(seatBets).length > 0) {
+          socket.emit('hand:seat_bets', { seatBets });
+        }
+      }
+      // Don't return — still register lobby handlers so they're available after the player leaves the table
+    } else {
+      socket.join('lobby');
+      socket.emit('lobby:table_list', tableService.listTables().map((t) => tableStateFor(t, userId)));
+    }
 
     socket.on('lobby:list_tables', () => {
       socket.emit('lobby:table_list', tableService.listTables().map((t) => tableStateFor(t, userId)));

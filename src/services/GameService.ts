@@ -27,8 +27,16 @@ export class GameService {
 
     const readySeats = state.seats.filter(
       (s): s is NonNullable<typeof s> =>
-        s !== null && s.stack >= state.config.bigBlind && s.status !== 'sitting-out',
+        s !== null &&
+        s.stack >= state.config.bigBlind &&
+        s.status !== 'sitting-out' &&
+        s.status !== 'waiting-for-bb',
     );
+
+    // Advance waiting-for-bb players to active so they join the next hand
+    for (const seat of state.seats) {
+      if (seat?.status === 'waiting-for-bb') seat.status = 'active';
+    }
 
     if (readySeats.length < 2) return false;
 
@@ -61,15 +69,23 @@ export class GameService {
     tableStateRepo.saveHandSnapshot(snapshot.handId, snapshot);
     this.machines.set(snapshot.handId, machine);
 
-    const deadlineMs = Date.now() + state.settings.actionTimeoutSeconds * 1000;
-    tableStateRepo.setActionTimer(snapshot.handId, deadlineMs);
-    this.scheduleTimeout(tableId, snapshot.handId, emit);
-
-    for (const event of events) {
-      if (event.type === 'action_required') {
-        (event.payload as Record<string, unknown>).deadlineMs = deadlineMs;
+    if (snapshot.phase === 'complete') {
+      // Hand ended immediately (e.g. both players all-in from blinds) — skip timer
+      for (const event of events) {
+        emit(event.type, event.payload, event.privateToPlayerId);
       }
-      emit(event.type, event.payload, event.privateToPlayerId);
+      this.onHandComplete(tableId, state, snapshot, emit);
+    } else {
+      const deadlineMs = Date.now() + state.settings.actionTimeoutSeconds * 1000;
+      tableStateRepo.setActionTimer(snapshot.handId, deadlineMs);
+      this.scheduleTimeout(tableId, snapshot.handId, emit);
+
+      for (const event of events) {
+        if (event.type === 'action_required') {
+          (event.payload as Record<string, unknown>).deadlineMs = deadlineMs;
+        }
+        emit(event.type, event.payload, event.privateToPlayerId);
+      }
     }
 
     return true;
@@ -79,6 +95,13 @@ export class GameService {
     const machine = this.machines.get(action.handId);
     if (!machine) {
       emit('hand:error', { code: 'NO_HAND', message: 'Hand not found' }, action.playerId);
+      return;
+    }
+
+    // Verify the hand belongs to this table — prevents cross-table action injection
+    const tableState = tableStateRepo.getTableState(tableId);
+    if (tableState?.currentHandId !== action.handId) {
+      emit('hand:error', { code: 'WRONG_TABLE', message: 'Hand does not belong to this table' }, action.playerId);
       return;
     }
 
@@ -124,7 +147,6 @@ export class GameService {
       return;
     }
 
-    const tableState = tableStateRepo.getTableState(tableId);
     if (tableState) {
       this.syncStacks(tableState, snapshot);
       tableStateRepo.saveTableState(tableId, tableState);
@@ -220,6 +242,28 @@ export class GameService {
     if (handle) {
       clearTimeout(handle);
       this.autoDealTimeouts.delete(tableId);
+    }
+  }
+
+  /** Tear down all GameService state for a table that has been deleted. */
+  cancelTable(tableId: string): void {
+    this.cancelAutoDeal(tableId);
+
+    const ritVote = this.pendingRITVotes.get(tableId);
+    if (ritVote) {
+      clearTimeout(ritVote.timeout);
+      this.pendingRITVotes.delete(tableId);
+    }
+
+    this.lastHandHoleCards.delete(tableId);
+
+    // Also clean up the active hand machine and its timer if one is running
+    const state = tableStateRepo.getTableState(tableId);
+    const handId = state?.currentHandId;
+    if (handId) {
+      this.clearTimeout(handId);
+      this.machines.delete(handId);
+      tableStateRepo.deleteHandSnapshot(handId);
     }
   }
 

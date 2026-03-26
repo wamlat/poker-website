@@ -234,6 +234,7 @@ export class HandStateMachine {
         seatIndex: seat.seatIndex,
         action: action.action,
         amount: action.amount,
+        stack: seat.stack,
         pot: this.snapshot.pot,
       },
     });
